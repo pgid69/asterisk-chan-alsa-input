@@ -599,7 +599,6 @@ static int cm109_input_ev(struct input_dev *idev, unsigned int type,
 
 	dev_dbg(&dev->intf->dev,
 		"input_ev: type=%u code=%u value=%d\n", type, code, value);
-	printk("input_ev: type=%u code=%u value=%d\n", type, code, value);
 
 	if (type != EV_SND)
 		return -EINVAL;
