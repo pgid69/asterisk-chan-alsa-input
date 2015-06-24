@@ -1,0 +1,42 @@
+;
+; Configuration file
+
+; Global parameters
+[general]
+;
+; Number of lines
+; Valid value must be in the range [1, 1]
+lines = 1
+;
+; Default language
+;
+language=en
+
+; Specific parameters of the first line
+[line1]
+enable = 1
+; Context used for call emitted with this line
+context = ai-line-1
+; Which ALSA devices to use to capture and play voice
+; If empty falls back to 'default'
+;snd_capture_device=plughw:1,0
+;snd_playback_device=plughw:1,0
+; Which raw event device to use as phone keypad
+; If empty, use Asterisk console and commands ai dial and ai press
+;event_input_device=/dev/input/event12
+; Which raw event device to use for ringing (can be the same as for 'event_input_device')
+;event_output_device=/dev/input/event12
+; If 1, the channel reads digits then start PBX with
+; the dialed extension
+; If 0, starts PBX immediately when phone goes off hook
+monitor_dialing = 1
+; If monitor_dialing = 1, if a digit is dialed, the channel waits the
+; following timeout before searching if all the digits dialed form a
+; valid extension
+dialing_timeout = 5000
+; This sets the Caller Id string and number for calls originating on
+; this line.
+caller_id = "line1" <00-00-00-01>
+; Default Music on Hold class to use when this channel is placed on hold
+moh_interpret = default
+
