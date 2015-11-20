@@ -13,7 +13,11 @@
  * - Komunikate KIP1000
  * - Genius G-talk
  * - Allied-Telesis Corega USBPH01
+ * - Topcom Webt@lker 211 (keypad works but not the screen)
  * - ...
+ * If device is handled by usbhid driver instead of this driver,
+ * see remark near definition of constant VENDOR_ID, on how to resolve the
+ * problem
  *
  * This driver is based on the yealink.c driver
  *
@@ -26,6 +30,7 @@
  *
  * Todo:
  *   - Read/write EEPROM
+ *
  */
 
 #include <linux/kernel.h>
@@ -56,6 +61,19 @@ enum {
    HID_OR3 = 0x03, /* SPDIF status channel or EEPROM_CTRL          */
 
    /* HID_IR0 */
+   /* bits 7-6
+      When bit7 HID_OR0 == 0:
+      HID_IR0-3 are programmed by MCU (and GPI)
+      0: HID_IR1 is used as GPI
+      1: HID_IR0-3 are used as generic HID registers
+      2: Values written to HID_IR0-3 are also mapped
+      to MCU_CTRL, EEPROM_DATA0-1,
+      EEPROM_CTRL
+      3: Reserved
+    */
+   HID_IR_GPI   = 0 << 6,
+   HID_IR_GENERIC_HID_REG = 1 << 6,
+   HID_IR_MAP_MCU_EEPROM  = 2 << 6,
    RECORD_MUTE   = 1 << 3,
    PLAYBACK_MUTE = 1 << 2,
    VOLUME_DOWN   = 1 << 1,
@@ -85,7 +103,9 @@ struct cm109_ctl_packet {
    u8 byte[4];
 } __attribute__ ((packed));
 
-enum { USB_PKT_LEN = sizeof(struct cm109_ctl_packet) };
+enum {
+   USB_PKT_LEN = sizeof(struct cm109_ctl_packet),
+};
 
 /* CM109 device structure */
 struct cm109_dev {
@@ -96,21 +116,21 @@ struct cm109_dev {
    /* irq input channel */
    struct cm109_ctl_packet *irq_data;
    dma_addr_t irq_dma;
-   struct urb *urb_irq;
+   struct urb *irq_urb;
 
    /* control output channel */
    struct cm109_ctl_packet *ctl_data;
    dma_addr_t ctl_dma;
    struct usb_ctrlrequest *ctl_req;
-   struct urb *urb_ctl;
+   struct urb *ctl_urb;
    /*
     * The 3 bitfields below are protected by ctl_submit_lock.
     * They have to be separate since they are accessed from IRQ
     * context.
     */
    unsigned irq_urb_pending:1;   /* irq_urb is in flight */
+   unsigned submit_ctl_urb:1;    /* ctl_urb must be submitted */
    unsigned ctl_urb_pending:1;   /* ctl_urb is in flight */
-   unsigned buzzer_pending:1; /* need to issue buzz command */
    spinlock_t ctl_submit_lock;
 
    unsigned char buzzer_state;   /* on/off */
@@ -288,6 +308,35 @@ static unsigned short keymap_atcom(int scancode)
    }
 }
 
+static unsigned short keymap_webtalker(int scancode)
+{
+   switch (scancode) {           /* phone key:   */
+   case 0x15: return KEY_NUMERIC_0;    /*   0          */
+   case 0x05: return KEY_NUMERIC_1;    /*   1          */
+   case 0x06: return KEY_NUMERIC_2;    /*   2          */
+   case 0x07: return KEY_NUMERIC_3;    /*   3          */
+   case 0x0A: return KEY_NUMERIC_4;    /*   4          */
+   case 0x0B: return KEY_NUMERIC_5;    /*   5          */
+   case 0x0C: return KEY_NUMERIC_6;    /*   6          */
+   case 0x0F: return KEY_NUMERIC_7;    /*   7          */
+   case 0x10: return KEY_NUMERIC_8;    /*   8          */
+   case 0x11: return KEY_NUMERIC_9;    /*   9          */
+   case 0x16: return KEY_NUMERIC_POUND;      /*   #          */
+   case 0x14: return KEY_NUMERIC_STAR;    /*   *          */
+   case 0x08: return KEY_ENTER;        /*   pickup     */
+   case 0x0D: return KEY_ESC;       /*   hangup     */
+   case 0x00: return KEY_UP;     /* Menu up */
+   case 0x03: return KEY_DOWN;      /* Menu down */
+   case 0x02: return KEY_VOLUMEDOWN;      /* left arrow   */
+   case 0x01: return KEY_VOLUMEUP;        /* right arrow  */
+   case 0x12: return KEY_MUTE;
+   /* case 0x18: return ???; */ /* Handsfree */
+   case 0x17: return KEY_BACKSPACE; /* Delete */
+   case 0x13: return KEY_PHONE; /* Skype */
+   default:   return special_keymap(scancode);
+   }
+}
+
 static unsigned short (*keymap)(int) = keymap_kip1000;
 
 /*
@@ -297,7 +346,7 @@ static unsigned short (*keymap)(int) = keymap_kip1000;
 static inline void report_key(struct cm109_dev *dev, int key, int value)
 {
    struct input_dev *idev = dev->idev;
-   //printk("report_key(key = %d, value = %d)\n", (int)(key), (int)(value));
+   /* printk(KERN_INFO KBUILD_MODNAME "report_key(key = %d, value = %d)\n", (int)(key), (int)(value)); */
    input_report_key(idev, key, value);
    input_sync(idev);
 }
@@ -306,34 +355,16 @@ static inline void report_key(struct cm109_dev *dev, int key, int value)
  * CM109 usb communication interface
  *****************************************************************************/
 
-static void cm109_submit_buzz_toggle(struct cm109_dev *dev)
-{
-   int error;
-
-   if (dev->buzzer_state) {
-      dev->ctl_data->byte[HID_OR0] |= BUZZER_ON;
-   }
-   else {
-      dev->ctl_data->byte[HID_OR0] &= ~BUZZER_ON;
-   }
-
-   error = usb_submit_urb(dev->urb_ctl, GFP_ATOMIC);
-   if (error) {
-      dev_err(&dev->intf->dev,
-         "%s: usb_submit_urb (urb_ctl) failed %d\n",
-         __func__, error);
-   }
-}
-
 /*
  * IRQ handler
  */
-static void cm109_urb_irq_callback(struct urb *urb)
+static void cm109_irq_urb_callback(struct urb *urb)
 {
    struct cm109_dev *dev = urb->context;
    const int status = urb->status;
    int error;
    u8 keybit = (1 << (dev->keyindex >> 2));
+   int gpio_mode = 0;
 
    dev_dbg(&dev->intf->dev, "### URB IRQ: [0x%02x 0x%02x 0x%02x 0x%02x] keyindex=%lu\n",
         (unsigned int)(dev->irq_data->byte[0]),
@@ -341,15 +372,17 @@ static void cm109_urb_irq_callback(struct urb *urb)
         (unsigned int)(dev->irq_data->byte[2]),
         (unsigned int)(dev->irq_data->byte[3]),
         (unsigned long)(dev->keyindex));
-   /*printk("### URB IRQ: [0x%02x 0x%02x 0x%02x 0x%02x] keyindex=%lu\n",
+   /* printk(KERN_INFO KBUILD_MODNAME "### URB IRQ: [0x%02x 0x%02x 0x%02x 0x%02x] keyindex=%lu\n",
         (unsigned int)(dev->irq_data->byte[0]),
         (unsigned int)(dev->irq_data->byte[1]),
         (unsigned int)(dev->irq_data->byte[2]),
         (unsigned int)(dev->irq_data->byte[3]),
-        (unsigned long)(dev->keyindex));*/
+        (unsigned long)(dev->keyindex)); */
 
    if (status) {
-      if (status == -ESHUTDOWN) {
+      if ((-ESHUTDOWN == status)
+          || (-ECONNRESET == status)
+          || (-ENOENT == status)) {
          return;
       }
       dev_err_ratelimited(&dev->intf->dev, "%s: urb status %d\n",
@@ -402,77 +435,98 @@ static void cm109_urb_irq_callback(struct urb *urb)
       }
    }
 
-   /* Scan key column */
-   if (dev->keyindex >= 16) {
-      /* Any changes ? */
-      if ((dev->gpi & 0xf0) == (dev->irq_data->byte[HID_IR1] & 0xf0)) {
-         goto out;
+   if (HID_IR_GPI == (dev->irq_data->byte[HID_IR0] & 0xC0)) {
+      gpio_mode = 1;
+      /* Scan key column */
+      if (dev->keyindex >= 16) {
+         /* Any changes ? */
+         if ((dev->gpi & 0xf0) == (dev->irq_data->byte[HID_IR1] & 0xf0)) {
+            goto out;
+         }
+         dev->gpi = dev->irq_data->byte[HID_IR1] & 0xf0;
+         dev->keyindex = 0;
+         keybit = 1;
       }
-      dev->gpi = dev->irq_data->byte[HID_IR1] & 0xf0;
-      dev->keyindex = 0;
-      keybit = 1;
+      else {
+         u8 code = dev->irq_data->byte[HID_IR1];
+         u8 mask;
+         size_t i;
+         for (i = 0, mask = 0x10; (i < 4); i += 1, mask <<= 1) {
+            u32 keystatusmask = (1 << (dev->keyindex + i));
+            if ((code & mask)) {
+               if (!(dev->keystatus & keystatusmask)) {
+                  // Key pressed
+                  report_key(dev, dev->keymap[mask | keybit], 1);
+                  dev->keystatus |= keystatusmask;
+               }
+            }
+            else {
+               if ((dev->keystatus & keystatusmask)) {
+                  // Key released
+                  report_key(dev, dev->keymap[mask | keybit], 0);
+                  dev->keystatus &= (~(keystatusmask));
+               }
+            }
+         }
+         dev->keyindex += 4;
+         keybit <<= 1;
+      }
    }
    else {
-      u8 code = dev->irq_data->byte[HID_IR1];
-      u8 mask;
-      size_t i;
-      for (i = 0, mask = 0x10; (i < 4); i += 1, mask <<= 1) {
-         u32 keystatusmask = (1 << (dev->keyindex + i));
-         if ((code & mask)) {
-            if (!(dev->keystatus & keystatusmask)) {
-               // Key pressed
-               report_key(dev, dev->keymap[mask | keybit], 1);
-               dev->keystatus |= keystatusmask;
-            }
-         }
-         else {
-            if ((dev->keystatus & keystatusmask)) {
-               // Key released
-               report_key(dev, dev->keymap[mask | keybit], 0);
-               dev->keystatus &= (~(keystatusmask));
-            }
-         }
+      u8 hid = dev->irq_data->byte[HID_IR1];
+      if (0 == (hid & 0x80)) {
+         // Key pressed
+         report_key(dev, dev->keymap[hid], 1);
       }
-      dev->keyindex += 4;
-      keybit <<= 1;
+      else {
+         // Key released
+         report_key(dev, dev->keymap[hid & 0x7F], 0);
+      }
    }
 
  out:
 
-   spin_lock(&dev->ctl_submit_lock);
+   spin_lock(&(dev->ctl_submit_lock));
 
    dev->irq_urb_pending = 0;
 
    if (likely(!dev->shutdown)) {
-
-      if (dev->buzzer_state) {
-         dev->ctl_data->byte[HID_OR0] |= BUZZER_ON;
+      if (gpio_mode) {
+         // Set GPIO
+         if (keybit >= 0x10) {
+            keybit = 0x0f;
+         }
+         dev->ctl_data->byte[HID_OR1] = keybit;
+         dev->ctl_data->byte[HID_OR2] = keybit;
+         dev->submit_ctl_urb = 1;
       }
-      else {
-         dev->ctl_data->byte[HID_OR0] &= ~BUZZER_ON;
-      }
-
-      if (keybit >= 0x10) {
-         keybit = 0x0f;
-      }
-      dev->ctl_data->byte[HID_OR1] = keybit;
-      dev->ctl_data->byte[HID_OR2] = keybit;
-
-      dev->buzzer_pending = 0;
-      dev->ctl_urb_pending = 1;
-
-      error = usb_submit_urb(dev->urb_ctl, GFP_ATOMIC);
-      if (error) {
-         dev_err(&dev->intf->dev,
-            "%s: usb_submit_urb (urb_ctl) failed %d\n",
-            __func__, error);
+      if (!dev->ctl_urb_pending) {
+         if (dev->submit_ctl_urb) {
+            dev->submit_ctl_urb = 0;
+            dev->ctl_urb_pending = 1;
+            error = usb_submit_urb(dev->ctl_urb, GFP_ATOMIC);
+            if (error) {
+               dev_err(&dev->intf->dev,
+                  "%s: usb_submit_urb (ctl_urb) failed %d\n",
+                  __func__, error);
+            }
+         }
+         else {
+            dev->irq_urb_pending = 1;
+            error = usb_submit_urb(dev->irq_urb, GFP_ATOMIC);
+            if (error) {
+               dev_err(&dev->intf->dev,
+                  "%s: usb_submit_urb (irq_urb) failed %d\n",
+                  __func__, error);
+            }
+         }
       }
    }
 
-   spin_unlock(&dev->ctl_submit_lock);
+   spin_unlock(&(dev->ctl_submit_lock));
 }
 
-static void cm109_urb_ctl_callback(struct urb *urb)
+static void cm109_ctl_urb_callback(struct urb *urb)
 {
    struct cm109_dev *dev = urb->context;
    const int status = urb->status;
@@ -485,55 +539,73 @@ static void cm109_urb_ctl_callback(struct urb *urb)
         dev->ctl_data->byte[3]);
 
    if (status) {
-      if (status == -ESHUTDOWN) {
+      if ((-ESHUTDOWN == status)
+          || (-ECONNRESET == status)
+          || (-ENOENT == status)) {
          return;
       }
       dev_err_ratelimited(&dev->intf->dev, "%s: urb status %d\n",
                 __func__, status);
    }
 
-   spin_lock(&dev->ctl_submit_lock);
+   spin_lock(&(dev->ctl_submit_lock));
 
    dev->ctl_urb_pending = 0;
 
    if (likely(!dev->shutdown)) {
-
-      if (dev->buzzer_pending || status) {
-         dev->buzzer_pending = 0;
+      if ((dev->submit_ctl_urb) || (status)) {
+         dev->submit_ctl_urb = 0;
          dev->ctl_urb_pending = 1;
-         cm109_submit_buzz_toggle(dev);
+         error = usb_submit_urb(dev->ctl_urb, GFP_ATOMIC);
+         if (error) {
+            dev_err(&dev->intf->dev,
+               "%s: usb_submit_urb (ctl_urb) failed %d\n",
+               __func__, error);
+         }
       }
       else if (likely(!dev->irq_urb_pending)) {
          /* ask for key data */
          dev->irq_urb_pending = 1;
-         error = usb_submit_urb(dev->urb_irq, GFP_ATOMIC);
+         error = usb_submit_urb(dev->irq_urb, GFP_ATOMIC);
          if (error) {
             dev_err(&dev->intf->dev,
-               "%s: usb_submit_urb (urb_irq) failed %d\n",
+               "%s: usb_submit_urb (irq_urb) failed %d\n",
                __func__, error);
          }
       }
    }
 
-   spin_unlock(&dev->ctl_submit_lock);
+   spin_unlock(&(dev->ctl_submit_lock));
 }
 
 static void cm109_toggle_buzzer_async(struct cm109_dev *dev)
 {
    unsigned long flags;
 
-   spin_lock_irqsave(&dev->ctl_submit_lock, flags);
+   spin_lock_irqsave(&(dev->ctl_submit_lock), flags);
 
-   if (dev->ctl_urb_pending) {
-      /* URB completion will resubmit */
-      dev->buzzer_pending = 1;
+   if (dev->buzzer_state) {
+      dev->ctl_data->byte[HID_OR0] |= BUZZER_ON;
    }
    else {
+      dev->ctl_data->byte[HID_OR0] &= ~BUZZER_ON;
+   }
+   dev->submit_ctl_urb = 1;
+
+   if (!dev->ctl_urb_pending) {
+      int error;
+
+      dev->submit_ctl_urb = 0;
       dev->ctl_urb_pending = 1;
-      cm109_submit_buzz_toggle(dev);
+      error = usb_submit_urb(dev->ctl_urb, GFP_ATOMIC);
+      if (error) {
+         dev_err(&dev->intf->dev,
+            "%s: usb_submit_urb (ctl_urb) failed %d\n",
+            __func__, error);
+      }
    }
 
-   spin_unlock_irqrestore(&dev->ctl_submit_lock, flags);
+   spin_unlock_irqrestore(&(dev->ctl_submit_lock), flags);
 }
 
 static void cm109_toggle_buzzer_sync(struct cm109_dev *dev, int on)
@@ -569,8 +641,8 @@ static void cm109_stop_traffic(struct cm109_dev *dev)
     */
    smp_wmb();
 
-   usb_kill_urb(dev->urb_ctl);
-   usb_kill_urb(dev->urb_irq);
+   usb_kill_urb(dev->ctl_urb);
+   usb_kill_urb(dev->irq_urb);
 
    cm109_toggle_buzzer_sync(dev, 0);
 
@@ -617,10 +689,12 @@ static int cm109_input_open(struct input_dev *idev)
    dev->ctl_data->byte[HID_OR1] = 0x0f;
    dev->ctl_data->byte[HID_OR2] = 0x0f;
    dev->ctl_data->byte[HID_OR3] = 0x00;
-
-   error = usb_submit_urb(dev->urb_ctl, GFP_KERNEL);
+   dev->irq_urb_pending = 0;
+   dev->submit_ctl_urb = 0;
+   dev->ctl_urb_pending = 1;
+   error = usb_submit_urb(dev->ctl_urb, GFP_KERNEL);
    if (error) {
-      dev_err(&dev->intf->dev, "%s: usb_submit_urb (urb_ctl) failed %d\n",
+      dev_err(&dev->intf->dev, "%s: usb_submit_urb (ctl_urb) failed %d\n",
          __func__, error);
    }
    else {
@@ -695,7 +769,17 @@ static const struct driver_info info_cm109 = {
 
 enum {
    VENDOR_ID        = 0x0d8c, /* C-Media Electronics */
-   PRODUCT_ID_CM109 = 0x000e, /* CM109 defines range 0x0008 - 0x000f */
+   /*
+    CM109 defines range 0x0008 - 0x000f
+    If the device is handled by driver usbhid there are two solutions :
+    - manually unbind the device from driver usbhid and bind it to driver cm109
+        cd /sys/bus/usb/drivers/usbhid; echo "2-2:1.3" > unbind; cd ../cm109; echo "2-2:1.3" > bind
+    - put the following line in file /etc/modprobe.d/usbhid
+        options usbhid quirks=0x0d8c:0x0008:0x0004
+      Where 0x0d8c:0x0008 are vendor id and product id, and 0x0004 means HID_QUIRK_IGNORE
+   */
+   PRODUCT_ID_CM109_8 = 0x0008, /* Topcom Webt@lker 211 */
+   PRODUCT_ID_CM109_E = 0x000e, /* Audio Adapter (Planet UP-100, Genius G-Talk) */
 };
 
 /* table of devices that work with this driver */
@@ -704,7 +788,17 @@ static const struct usb_device_id cm109_usb_table[] = {
       .match_flags = USB_DEVICE_ID_MATCH_DEVICE |
             USB_DEVICE_ID_MATCH_INT_INFO,
       .idVendor = VENDOR_ID,
-      .idProduct = PRODUCT_ID_CM109,
+      .idProduct = PRODUCT_ID_CM109_8,
+      .bInterfaceClass = USB_CLASS_HID,
+      .bInterfaceSubClass = 0,
+      .bInterfaceProtocol = 0,
+      .driver_info = (kernel_ulong_t) &info_cm109
+   },
+   {
+      .match_flags = USB_DEVICE_ID_MATCH_DEVICE |
+            USB_DEVICE_ID_MATCH_INT_INFO,
+      .idVendor = VENDOR_ID,
+      .idProduct = PRODUCT_ID_CM109_E,
       .bInterfaceClass = USB_CLASS_HID,
       .bInterfaceSubClass = 0,
       .bInterfaceProtocol = 0,
@@ -726,8 +820,8 @@ static void cm109_usb_cleanup(struct cm109_dev *dev)
               dev->irq_data, dev->irq_dma);
    }
 
-   usb_free_urb(dev->urb_irq);   /* parameter validation in core/urb */
-   usb_free_urb(dev->urb_ctl);   /* parameter validation in core/urb */
+   usb_free_urb(dev->irq_urb);   /* parameter validation in core/urb */
+   usb_free_urb(dev->ctl_urb);   /* parameter validation in core/urb */
    kfree(dev);
 }
 
@@ -764,8 +858,8 @@ static int cm109_usb_probe(struct usb_interface *intf,
       return -ENOMEM;
    }
 
-   spin_lock_init(&dev->ctl_submit_lock);
-   mutex_init(&dev->pm_mutex);
+   spin_lock_init(&(dev->ctl_submit_lock));
+   mutex_init(&(dev->pm_mutex));
 
    dev->udev = udev;
    dev->intf = intf;
@@ -794,13 +888,13 @@ static int cm109_usb_probe(struct usb_interface *intf,
    }
 
    /* allocate urb structures */
-   dev->urb_irq = usb_alloc_urb(0, GFP_KERNEL);
-   if (!dev->urb_irq) {
+   dev->irq_urb = usb_alloc_urb(0, GFP_KERNEL);
+   if (!dev->irq_urb) {
       goto err_out;
    }
 
-   dev->urb_ctl = usb_alloc_urb(0, GFP_KERNEL);
-   if (!dev->urb_ctl) {
+   dev->ctl_urb = usb_alloc_urb(0, GFP_KERNEL);
+   if (!dev->ctl_urb) {
       goto err_out;
    }
 
@@ -813,12 +907,12 @@ static int cm109_usb_probe(struct usb_interface *intf,
    }
 
    /* initialise irq urb */
-   usb_fill_int_urb(dev->urb_irq, udev, pipe, dev->irq_data,
+   usb_fill_int_urb(dev->irq_urb, udev, pipe, dev->irq_data,
           USB_PKT_LEN,
-          cm109_urb_irq_callback, dev, endpoint->bInterval);
-   dev->urb_irq->transfer_dma = dev->irq_dma;
-   dev->urb_irq->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
-   dev->urb_irq->dev = udev;
+          cm109_irq_urb_callback, dev, endpoint->bInterval);
+   dev->irq_urb->transfer_dma = dev->irq_dma;
+   dev->irq_urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+   dev->irq_urb->dev = udev;
 
    /* initialise ctl urb */
    dev->ctl_req->bRequestType = USB_TYPE_CLASS | USB_RECIP_INTERFACE |
@@ -828,12 +922,12 @@ static int cm109_usb_probe(struct usb_interface *intf,
    dev->ctl_req->wIndex = cpu_to_le16(interface->desc.bInterfaceNumber);
    dev->ctl_req->wLength = cpu_to_le16(USB_PKT_LEN);
 
-   usb_fill_control_urb(dev->urb_ctl, udev, usb_sndctrlpipe(udev, 0),
+   usb_fill_control_urb(dev->ctl_urb, udev, usb_sndctrlpipe(udev, 0),
               (void *)dev->ctl_req, dev->ctl_data, USB_PKT_LEN,
-              cm109_urb_ctl_callback, dev);
-   dev->urb_ctl->transfer_dma = dev->ctl_dma;
-   dev->urb_ctl->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
-   dev->urb_ctl->dev = udev;
+              cm109_ctl_urb_callback, dev);
+   dev->ctl_urb->transfer_dma = dev->ctl_dma;
+   dev->ctl_urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+   dev->ctl_urb->dev = udev;
 
    /* find out the physical bus location */
    usb_make_path(udev, dev->phys, sizeof(dev->phys));
@@ -842,8 +936,8 @@ static int cm109_usb_probe(struct usb_interface *intf,
    /* register settings for the input device */
    input_dev->name = nfo->name;
    input_dev->phys = dev->phys;
-   usb_to_input_id(udev, &input_dev->id);
-   input_dev->dev.parent = &intf->dev;
+   usb_to_input_id(udev, &(input_dev->id));
+   input_dev->dev.parent = &(intf->dev);
 
    input_set_drvdata(input_dev, dev);
    input_dev->open = cm109_input_open;
@@ -951,7 +1045,7 @@ static struct usb_driver cm109_driver = {
    .supports_autosuspend = 1,
 };
 
-static int __init cm109_select_keymap(void)
+static int __init cm109_handle_params(void)
 {
    /* Load the phone keymap */
    if (!strcasecmp(phone, "kip1000")) {
@@ -974,6 +1068,11 @@ static int __init cm109_select_keymap(void)
       printk(KERN_INFO KBUILD_MODNAME ": "
          "Keymap for ATCom AU-100 phone loaded\n");
    }
+   else if (!strcasecmp(phone, "webtalker")) {
+      keymap = keymap_webtalker;
+      printk(KERN_INFO KBUILD_MODNAME ": "
+         "Keymap for Webt@lker 211 phone loaded\n");
+   }
    else {
       printk(KERN_ERR KBUILD_MODNAME ": "
          "Unsupported phone: %s\n", phone);
@@ -987,12 +1086,12 @@ static int __init cm109_init(void)
 {
    int err;
 
-   err = cm109_select_keymap();
+   err = cm109_handle_params();
    if (err) {
       return err;
    }
 
-   err = usb_register(&cm109_driver);
+   err = usb_register(&(cm109_driver));
    if (err) {
       return err;
    }

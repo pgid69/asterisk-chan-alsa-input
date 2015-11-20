@@ -5,7 +5,7 @@ I wanted to make it work on Linux, not just the integrated sound card, but also 
 Sound card was already correctly handled by Linux.
 Keypad was handled by cm109 kernel driver but there was a problem for some keys ('volume up', 'volume down', 'playback mute' and 'record mute') that when released continue to repeat.
 That's why i got sources of cm109 and made some modifications.
-The result is in sub-directory 'cm109.ko'. Compilation is done with script make_nohw.sh.
+The result is in sub-directory 'cm109.ko'. Compilation is done with script make.sh.
 
 The second phase was to use the Skype phone to make calls.
 As i have a little experience on developping Asterisk channel driver with project bcm63xx-phone, i created channel driver 'chan_alsa_input'.
@@ -20,6 +20,6 @@ The final result is in sub-directory 'chan_alsa_input'. It has been tested again
 Note that the channel driver can be used without the USB Skype Phone.
 The parameters 'snd_capture_device' and 'snd_playback_device' could be the name of any ALSA sound card.
 The parameter 'event_input_device' could be the name of a FIFO (see man mkfifo) to which some program with a nice GUI (yet to be developped) would write input events.
-And, as already mentionned, the parameter 'event_output_device' could be the name of the PC speaker device (or another FIFO to which some program would read input events and generate ring sound). 
+And, as already mentionned, the parameter 'event_output_device' could be the name of the PC speaker device (or another FIFO to which some program would read input events and generate ring sound).
 
 
