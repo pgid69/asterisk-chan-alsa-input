@@ -12,6 +12,10 @@
 /* Documentation about API of ALSA PCM is available at
    http://www.alsa-project.org/alsa-doc/alsa-lib/pcm.html */
 
+#if ((!defined AST_VERSION) || ((18 != AST_VERSION) && (110 != AST_VERSION) && (130 != AST_VERSION)))
+#error "Preprocessor define AST_VERSION not defined or not equal to 18, 110 or 130"
+#endif
+
 /* To be included first */
 #include <asterisk.h>
 
@@ -37,7 +41,12 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: 1 $")
 #include <asterisk/config.h>
 #include <asterisk/dsp.h>
 #include <asterisk/endian.h>
+#if (AST_VERSION > 110)
+#include <asterisk/format_cache.h>
+#endif /* (AST_VERSION > 110) */
+#if (AST_VERSION >= 110)
 #include <asterisk/format_cap.h>
+#endif /* (AST_VERSION >= 110) */
 #include <asterisk/frame.h>
 #include <asterisk/linkedlists.h>
 #include <asterisk/lock.h>
@@ -49,7 +58,6 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: 1 $")
 #include <asterisk/utils.h>
 
 /*
-
  D'apres ce que je comprends le deroulement est le suivant
  * Si l'appel est initie par l'utilisateur :
  celui ci decroche le telephone, ce qui est detecte par le moniteur,
@@ -70,7 +78,6 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: 1 $")
  la ligne.
 */
 
-
 #define DEBUG
 
 #undef alsa_input_assert
@@ -89,6 +96,423 @@ typedef int bool;
 #define false 0
 #define true 1
 #endif /* __cplusplus */
+
+#if (AST_VERSION < 110)
+typedef format_t alsa_input_ast_format;
+#else /* (AST_VERSION >= 110) */
+typedef struct ast_format alsa_input_ast_format;
+#endif /* (AST_VERSION >= 110) */
+
+#if (AST_VERSION < 110)
+typedef format_t alsa_input_ast_format_cap;
+#else /* (AST_VERSION >= 110) */
+typedef struct ast_format_cap alsa_input_ast_format_cap;
+#endif /* (AST_VERSION >= 110) */
+
+#if (AST_VERSION <= 110)
+/*
+ * If a new format is added, functions alsa_input_init_cache_ast_format and
+ * alsa_input_ast_format_cap_get_best_by_type should be updated
+ */
+static alsa_input_ast_format *ast_format_slin;
+#endif /* (AST_VERSION <= 110) */
+
+static void alsa_input_init_cache_ast_format(void)
+{
+#if (AST_VERSION < 110)
+   static format_t format_slin = AST_FORMAT_SLINEAR;
+   ast_format_slin = &(format_slin);
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   static struct ast_format format_slin;
+   ast_format_slin = ast_getformatbyname("slin", &(format_slin));
+   alsa_input_assert(NULL != ast_format_slin);
+#endif /* (110 == AST_VERSION) */
+}
+
+static inline const char *alsa_input_ast_format_get_name(
+   const alsa_input_ast_format *format)
+{
+   alsa_input_assert(NULL != format);
+#if (AST_VERSION < 110)
+   return (ast_getformatname(*format));
+#endif /* (110 == AST_VERSION) */
+#if (110 == AST_VERSION)
+   return (ast_getformatname(format));
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   return (ast_format_get_name(format));
+#endif /* (AST_VERSION > 110) */
+}
+
+static inline int alsa_input_ast_formats_are_equal(
+   const alsa_input_ast_format *format1, const alsa_input_ast_format *format2)
+{
+   alsa_input_assert((NULL != format1) && (NULL != format2));
+#if (AST_VERSION < 110)
+   return (*format1 == *format2);
+#else /* (AST_VERSION >= 110) */
+   return (AST_FORMAT_CMP_EQUAL == ast_format_cmp(format1, format2));
+#endif /* (AST_VERSION > =110) */
+}
+
+static inline alsa_input_ast_format_cap *alsa_input_ast_format_cap_alloc(void)
+{
+#if (AST_VERSION < 110)
+   alsa_input_assert(false);
+   return (NULL);
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   return (ast_format_cap_alloc());
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   return (ast_format_cap_alloc(AST_FORMAT_CAP_FLAG_DEFAULT));
+#endif /* (AST_VERSION > 110) */
+}
+
+static inline void alsa_input_ast_format_cap_destroy(alsa_input_ast_format_cap *cap)
+{
+   alsa_input_assert(NULL != cap);
+#if (AST_VERSION < 110)
+   alsa_input_assert(false);
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   ast_format_cap_destroy(cap);
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   ao2_ref(cap, -1);
+#endif /* (AST_VERSION > 110) */
+}
+
+#if (AST_VERSION <= 110)
+enum ast_media_type {
+   AST_MEDIA_TYPE_UNKNOWN,
+   AST_MEDIA_TYPE_AUDIO,
+};
+#endif /* (AST_VERSION <= 110) */
+
+static inline void alsa_input_ast_format_cap_remove_by_type(
+   alsa_input_ast_format_cap *cap, enum ast_media_type type)
+{
+   alsa_input_assert((NULL != cap) &&
+      ((AST_MEDIA_TYPE_AUDIO == type) || (AST_MEDIA_TYPE_UNKNOWN == type)));
+   if (AST_MEDIA_TYPE_AUDIO == type) {
+#if (AST_VERSION < 110)
+      *cap &= (~(AST_FORMAT_AUDIO_MASK));
+#endif /* (110 == AST_VERSION) */
+#if (110 == AST_VERSION)
+      ast_format_cap_remove_bytype(cap, AST_FORMAT_TYPE_AUDIO);
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+      ast_format_cap_remove_by_type(cap, type);
+#endif /* (AST_VERSION > 110) */
+   }
+   else if (AST_MEDIA_TYPE_UNKNOWN == type) {
+#if (AST_VERSION < 110)
+      *cap = 0;
+#endif /* (110 == AST_VERSION) */
+#if (110 == AST_VERSION)
+      ast_format_cap_remove_all(cap);
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+      ast_format_cap_remove_by_type(cap, type);
+#endif /* (AST_VERSION > 110) */
+   }
+   else {
+      alsa_input_assert(false);
+   }
+}
+
+static inline void alsa_input_ast_format_cap_append_format(
+   alsa_input_ast_format_cap *cap, alsa_input_ast_format *format)
+{
+   alsa_input_assert((NULL != cap) && (NULL != format));
+#if (AST_VERSION < 110)
+   *cap |= *format;
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   ast_format_cap_add(cap, format);
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   ast_format_cap_append(cap, format, 0);
+#endif /* (AST_VERSION > 110) */
+}
+
+static inline int alsa_input_ast_format_cap_iscompatible_cap(
+   const alsa_input_ast_format_cap *cap1, const alsa_input_ast_format_cap *cap2)
+{
+   alsa_input_assert((NULL != cap1) && (NULL != cap2));
+#if (AST_VERSION < 110)
+   return (*cap1 & *cap2);
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   return (ast_format_cap_has_joint(cap1, cap2));
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   return (ast_format_cap_iscompatible(cap1, cap2));
+#endif /* (AST_VERSION > 110) */
+}
+
+static const char *alsa_input_ast_channel_name(const struct ast_channel *chan)
+{
+   alsa_input_assert(NULL != chan);
+#if (AST_VERSION < 110)
+   return (chan->name);
+#else /* (AST_VERSION >= 110) */
+   return (ast_channel_name(chan));
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline enum ast_channel_state alsa_input_ast_channel_state(const struct ast_channel *chan)
+{
+   alsa_input_assert(NULL != chan);
+#if (AST_VERSION < 110)
+   return (chan->_state);
+#else /* (AST_VERSION >= 110) */
+   return (ast_channel_state(chan));
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline const char *alsa_input_ast_channel_linkedid(const struct ast_channel *chan)
+{
+   alsa_input_assert(NULL != chan);
+#if (AST_VERSION < 110)
+   return (chan->linkedid);
+#else /* (AST_VERSION >= 110) */
+   return (ast_channel_linkedid(chan));
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline struct ast_party_caller *alsa_input_ast_channel_caller(struct ast_channel *chan)
+{
+   alsa_input_assert(NULL != chan);
+#if (AST_VERSION < 110)
+   return (&(chan->caller));
+#else /* (AST_VERSION >= 110) */
+   return (ast_channel_caller(chan));
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline struct ast_party_connected_line *alsa_input_ast_channel_connected(struct ast_channel *chan)
+{
+   alsa_input_assert(NULL != chan);
+#if (AST_VERSION < 110)
+   return (&(chan->connected));
+#else /* (AST_VERSION >= 110) */
+   return (ast_channel_connected(chan));
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline void alsa_input_ast_channel_tech_set(struct ast_channel *chan,
+   const struct ast_channel_tech *chan_tech)
+{
+#if (AST_VERSION < 110)
+   chan->tech = chan_tech;
+#else /* (AST_VERSION >= 110) */
+   ast_channel_tech_set(chan, chan_tech);
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline void *alsa_input_ast_channel_tech_pvt(struct ast_channel *chan)
+{
+   alsa_input_assert(NULL != chan);
+#if (AST_VERSION < 110)
+   return (chan->tech_pvt);
+#else /* (AST_VERSION >= 110) */
+   return (ast_channel_tech_pvt(chan));
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline void alsa_input_ast_channel_tech_pvt_set(
+   struct ast_channel *chan, void *value)
+{
+   alsa_input_assert(NULL != chan);
+#if (AST_VERSION < 110)
+   chan->tech_pvt = value;
+#else /* (AST_VERSION >= 110) */
+   ast_channel_tech_pvt_set(chan, value);
+#endif /* (AST_VERSION >= 110) */
+}
+
+/* Beware : value must not be allocated on the stack */
+static inline void alsa_input_ast_channel_nativeformats_set(
+   struct ast_channel *chan, alsa_input_ast_format_cap *value)
+{
+   alsa_input_assert((NULL != chan) && (NULL != value));
+#if (AST_VERSION < 110)
+   chan->nativeformats = *value;
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   struct ast_format_cap *tmpcap = ast_channel_nativeformats(chan);
+   if (NULL != tmpcap) {
+      ast_format_cap_remove_all(tmpcap);
+      ast_format_cap_copy(tmpcap, value);
+   }
+   else {
+      ao2_ref(value, 1);
+      ast_channel_nativeformats_set(chan, value);
+   }
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   ast_channel_nativeformats_set(chan, value);
+#endif /* (AST_VERSION > 110) */
+}
+
+static alsa_input_ast_format *alsa_input_ast_channel_rawreadformat(
+   struct ast_channel *chan)
+{
+   alsa_input_assert(NULL != chan);
+#if (AST_VERSION < 110)
+   return (&(chan->rawreadformat));
+#else /* (AST_VERSION >= 110) */
+   return (ast_channel_rawreadformat(chan));
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline void alsa_input_ast_channel_set_rawreadformat(
+   struct ast_channel *chan, alsa_input_ast_format *format)
+{
+   alsa_input_assert((NULL != chan) && (NULL != format));
+#if (AST_VERSION < 110)
+   chan->rawreadformat = *format;
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   ast_format_copy(ast_channel_rawreadformat(chan), format);
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   ast_channel_set_rawreadformat(chan, format);
+#endif /* (AST_VERSION > 110) */
+}
+
+static inline void alsa_input_ast_channel_set_rawwriteformat(
+   struct ast_channel *chan, alsa_input_ast_format *format)
+{
+   alsa_input_assert((NULL != chan) && (NULL != format));
+#if (AST_VERSION < 110)
+   chan->rawwriteformat = *format;
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   ast_format_copy(ast_channel_rawwriteformat(chan), format);
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   ast_channel_set_rawwriteformat(chan, format);
+#endif /* (AST_VERSION > 110) */
+}
+
+static inline void alsa_input_ast_channel_set_readformat(
+   struct ast_channel *chan, alsa_input_ast_format *format)
+{
+   alsa_input_assert((NULL != chan) && (NULL != format));
+#if (AST_VERSION < 110)
+   chan->readformat = *format;
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   ast_format_copy(ast_channel_readformat(chan), format);
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   ast_channel_set_readformat(chan, format);
+#endif /* (AST_VERSION > 110) */
+}
+
+static inline void alsa_input_ast_channel_set_writeformat(
+   struct ast_channel *chan, alsa_input_ast_format *format)
+{
+   alsa_input_assert((NULL != chan) && (NULL != format));
+#if (AST_VERSION < 110)
+   chan->writeformat = *format;
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   ast_format_copy(ast_channel_writeformat(chan), format);
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   ast_channel_set_writeformat(chan, format);
+#endif /* (AST_VERSION > 110) */
+}
+
+static inline void alsa_input_ast_channel_context_set(
+   struct ast_channel *chan, const char *value)
+{
+   alsa_input_assert((NULL != chan) && (NULL != value));
+#if (AST_VERSION < 110)
+   ast_copy_string(chan->context, value, sizeof(chan->context));
+#else /* (AST_VERSION >= 110) */
+   ast_channel_context_set(chan, value);
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline void alsa_input_ast_channel_exten_set(
+   struct ast_channel *chan, const char *value)
+{
+   alsa_input_assert((NULL != chan) && (NULL != value));
+#if (AST_VERSION < 110)
+   ast_copy_string(chan->exten, value, sizeof(chan->exten));
+#else /* (AST_VERSION >= 110) */
+   ast_channel_exten_set(chan, value);
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline void alsa_input_ast_channel_language_set(
+   struct ast_channel *chan, const char *value)
+{
+   alsa_input_assert((NULL != chan) && (NULL != value));
+#if (AST_VERSION < 110)
+   ast_string_field_set(chan, language, value);
+#else /* (AST_VERSION >= 110) */
+   ast_channel_language_set(chan, value);
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline void alsa_input_ast_channel_rings_set(
+   struct ast_channel *chan, int value)
+{
+   alsa_input_assert(NULL != chan);
+#if (AST_VERSION < 110)
+   chan->rings = value;
+#else /* (AST_VERSION >= 110) */
+   ast_channel_rings_set(chan, value);
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline alsa_input_ast_format_cap *alsa_input_get_chan_tech_cap(
+   struct ast_channel_tech *chan_tech)
+{
+   alsa_input_assert(NULL != chan_tech);
+#if (AST_VERSION < 110)
+   return (&(chan_tech->capabilities));
+#else /* (AST_VERSION >= 110) */
+   return (chan_tech->capabilities);
+#endif /* (AST_VERSION >= 110) */
+}
+
+static inline const alsa_input_ast_format *alsa_input_ast_get_frame_format(
+   const struct ast_frame *frame)
+{
+   alsa_input_assert(NULL != frame);
+#if (AST_VERSION < 110)
+   return (&(frame->subclass.codec));
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   return (&(frame->subclass.format));
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   return (frame->subclass.format);
+#endif /* (AST_VERSION > 110) */
+}
+
+static inline void alsa_input_ast_set_frame_format(
+   struct ast_frame *frame, alsa_input_ast_format *format)
+{
+   alsa_input_assert((NULL != frame) && (NULL != format));
+#if (AST_VERSION < 110)
+   frame->subclass.codec = *format;
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+   ast_format_copy(&(frame->subclass.format), format);
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+   frame->subclass.format = format;
+#endif /* (AST_VERSION > 110) */
+}
 
 /* The two following values are from the Asterisk code */
 #define MIN_DTMF_DURATION 100
@@ -271,6 +695,16 @@ typedef struct {
    char ev_out_dev_name[50];
    bool monitor_dialing;
    /*
+    Character that when dialed, triggers the search for a valid extension
+    immediately, if monitor_dialing is true
+   */
+   char search_extension_trigger;
+   /*
+    Delay to wait before searching for default extension is no digit is
+    dialed, if monitor_dialing is true
+   */
+   int dialing_timeout_1st_digit;
+   /*
     Delay to wait after dialing a digit before searching for an extension,
     if monitor_dialing is true
    */
@@ -293,7 +727,6 @@ typedef struct {
 } alsa_input_chan_config_t;
 
 #define SAMPLE_SIZE 2
-#define AST_SAMPLE_FORMAT AST_FORMAT_SLINEAR
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 #define SND_PCM_SAMPLE_FORMAT SND_PCM_FORMAT_S16_LE
 #else
@@ -728,63 +1161,6 @@ static const int alsa_input_monitor_idle_timeout = 5000; /* ms */
 */
 static const int alsa_input_monitor_busy_period = (BUFFER_SIZE / (SAMPLE_SIZE * DEFAULT_SAMPLES_PER_MS));
 
-/*
- Compare parameter version with Asterisk version returned by
- ast_get_version_num().
- version must respects same format as the value returned by
- ast_get_version_num().
- Returns :
- - a negative value if version < Asterisk version
- - 0 if version == Asterisk version
- - a positive value if version > Asterisk version
-*/
-static int alsa_input_cmp_with_ast_version(const char *version)
-{
-   int ret;
-   const char *ast_version = ast_get_version_num();
-   size_t len_ast;
-   size_t len;
-
-   alsa_input_assert((NULL != version) && (NULL != ast_version));
-   while (*version == '0') {
-      version += 1;
-   }
-   while (*ast_version == '0') {
-      ast_version += 1;
-   }
-   len = strlen(version);
-   len_ast = strlen(ast_version);
-
-   if (len < len_ast) {
-      alsa_input_pr_debug("'%s' is less than Asterisk version ('%s')\n",
-         version, ast_version);
-      ret = -1;
-   }
-   else if (len > len_ast) {
-      alsa_input_pr_debug("'%s' is greater than Asterisk version ('%s')\n",
-         version, ast_version);
-      ret = 1;
-   }
-   else {
-      ret = strcmp(version, ast_version);
-#ifdef DEBUG
-      if (ret < 0) {
-         alsa_input_pr_debug("'%s' is less than Asterisk version ('%s')\n",
-            version, ast_version);
-      }
-      else if (ret > 0) {
-         alsa_input_pr_debug("'%s' is greater than Asterisk version ('%s')\n",
-            version, ast_version);
-      }
-      else {
-         alsa_input_pr_debug("'%s' is equal to Asterisk version ('%s')\n",
-            version, ast_version);
-      }
-#endif
-   }
-   return (ret);
-}
-
 static void alsa_input_convert_tone_part_to_item(
    const alsa_input_tone_part_t *pp, alsa_input_tone_item_t *pi, int vol)
 {
@@ -867,10 +1243,6 @@ static void alsa_input_tone_state_init(alsa_input_tone_state_t *ps,
 
 #if (2 != SAMPLE_SIZE)
 #error "SAMPLE_SIZE must be equal to 2"
-#endif
-
-#if (AST_FORMAT_SLINEAR != AST_SAMPLE_FORMAT)
-#error "AST_SAMPLE_FORMAT must be AST_FORMAT_SLINEAR"
 #endif
 
 static size_t alsa_input_generate_tone_data(alsa_input_tone_state_t *ps, __u8 *data, size_t len)
@@ -1408,7 +1780,7 @@ static void alsa_input_set_new_state(alsa_input_pvt_t *pvt,
          alsa_input_reset_pvt_monitor_state(pvt);
          /*
           We start searching alsa_input_default_extension ('s') after
-          pvt->line_cfg->dialing_timeout milliseconds
+          pvt->line_cfg->dialing_timeout_1st_digit milliseconds
          */
          pvt->ast_channel.search_extension = true;
          pvt->ast_channel.tv_wait = ast_tvnow();
@@ -1476,7 +1848,7 @@ static void alsa_input_unlink_from_ast_channel(alsa_input_pvt_t *pvt,
 
    alsa_input_assert((pvt->channel->monitor.lock_count > 0)
       && (NULL != pvt->owner) && (pvt->owner_lock_count > 0));
-   ast_channel_tech_pvt_set(ast, NULL);
+   alsa_input_ast_channel_tech_pvt_set(ast, NULL);
    pvt->owner = NULL;
    ast_setstate(ast, AST_STATE_DOWN);
    /* Set state before unlocking the channel */
@@ -1491,7 +1863,7 @@ static void alsa_input_unlink_from_ast_channel(alsa_input_pvt_t *pvt,
       alsa_input_set_new_state(pvt, AI_ST_DISCONNECTED, AI_EV_DISCONNECTED);
    }
    alsa_input_pr_debug("Line %lu unlink from channel '%s'.\n",
-      (unsigned long)(pvt->index_line + 1), ast_channel_name(ast));
+      (unsigned long)(pvt->index_line + 1), alsa_input_ast_channel_name(ast));
    ast_module_unref(ast_module_info->self);
    if (unlock_ast_channel) {
 #ifdef DEBUG
@@ -1519,7 +1891,7 @@ static void alsa_input_queue_hangup(alsa_input_pvt_t *pvt,
    alsa_input_unlink_from_ast_channel(pvt, cause, true);
    alsa_input_assert(NULL == pvt->owner);
    if (ast_queue_hangup(ast)) {
-      ast_log(AST_LOG_WARNING, "Unable to queue hangup on line '%s'\n", ast_channel_name(ast));
+      ast_log(AST_LOG_WARNING, "Unable to queue hangup on line '%s'\n", alsa_input_ast_channel_name(ast));
    }
 }
 
@@ -1788,10 +2160,16 @@ static void alsa_input_set_line_tone(alsa_input_pvt_t *pvt,
 /* Must be called with monitor.lock locked */
 static void alsa_input_new(alsa_input_pvt_t *pvt,
    alsa_input_state_t state, alsa_input_event_t cause,
-   const char *linkedid, bool *try_to_lock_ast_channel)
+#if (AST_VERSION <= 110)
+   const char *linkedid,
+#else /* (AST_VERSION > 110) */
+   const struct ast_assigned_ids *assigned_ids,
+   const struct ast_channel *requestor,
+#endif /* (AST_VERSION > 110) */
+   bool *try_to_lock_ast_channel)
 {
-   struct ast_channel *tmp;
    enum ast_channel_state ast_state;
+   struct ast_channel *tmp = NULL;
 
    alsa_input_pr_debug("alsa_input_new(state=%d, cause=%d)\n",
       (int)(state), (int)(cause));
@@ -1833,50 +2211,58 @@ static void alsa_input_new(alsa_input_pvt_t *pvt,
    tmp = ast_channel_alloc(1, ast_state,
       ('\0' != pvt->line_cfg->cid_num[0]) ? pvt->line_cfg->cid_num : NULL,
       ('\0' != pvt->line_cfg->cid_name[0]) ? pvt->line_cfg->cid_name : NULL,
-      "" /* acctcode */, pvt->ast_channel.digits, pvt->line_cfg->context, linkedid, 0,
+      "" /* acctcode */, pvt->ast_channel.digits, pvt->line_cfg->context,
+#if (AST_VERSION <= 110)
+      linkedid, 0,
+#else /* (AST_VERSION > 110) */
+      assigned_ids, requestor, AST_AMA_NONE,
+#endif /* (AST_VERSION > 110) */
       "%s/%lu", pvt->channel->chan_tech.type, (unsigned long)(pvt->index_line + 1));
    if (NULL != tmp) {
-      struct ast_format tmpfmt;
-      struct ast_format_cap *tmpcap = ast_channel_nativeformats(tmp);
       bool hangup = false;
 
       /* From version 12.0, ast_channel_alloc() returned an ast_channel locked */
-      if (alsa_input_cmp_with_ast_version("120000") > 0) {
-         /*
-          We can safely lock channel (without fear of a deadlock because
-          monitor.lock is locked), for 2 reasons :
-          - channel_tech is not set
-          - pvt->owner is still NULL
-         */
-         ast_channel_lock(tmp);
-      }
+#if (AST_VERSION <= 110)
+      /*
+       We can safely lock channel (without fear of a deadlock because
+       monitor.lock is locked), for 2 reasons :
+       - channel_tech is not set
+       - pvt->owner is still NULL
+      */
+      ast_channel_lock(tmp);
+#endif /* (AST_VERSION <= 110) */
 #ifdef DEBUG
       pvt->owner_lock_count += 1;
       alsa_input_assert(pvt->owner_lock_count > 0);
 #endif /* DEBUG */
 
-      ast_channel_tech_set(tmp, &(pvt->channel->chan_tech));
+      alsa_input_ast_channel_tech_set(tmp, &(pvt->channel->chan_tech));
 
       /* No file descriptor to poll (polling done in monitor thread) */
       ast_channel_set_fd(tmp, 0, -1);
-      ast_format_set(&(tmpfmt), AST_SAMPLE_FORMAT, 0);
-      ast_format_cap_remove_all(tmpcap);
-      ast_format_cap_add(tmpcap, &(tmpfmt));
-      ast_format_copy(ast_channel_rawreadformat(tmp), &(tmpfmt));
-      ast_format_copy(ast_channel_rawwriteformat(tmp), &(tmpfmt));
-      ast_format_copy(ast_channel_readformat(tmp), &(tmpfmt));
-      ast_format_copy(ast_channel_writeformat(tmp), &(tmpfmt));
+      alsa_input_ast_channel_nativeformats_set(tmp, alsa_input_get_chan_tech_cap(&(pvt->channel->chan_tech)));
+      alsa_input_ast_channel_set_rawreadformat(tmp, ast_format_slin);
+      alsa_input_ast_channel_set_rawwriteformat(tmp, ast_format_slin);
+      alsa_input_ast_channel_set_readformat(tmp, ast_format_slin);
+      alsa_input_ast_channel_set_writeformat(tmp, ast_format_slin);
       /* no need to call ast_setstate: the channel_alloc already did its job */
-      ast_channel_exten_set(tmp, pvt->ast_channel.digits);
+      alsa_input_ast_channel_exten_set(tmp, pvt->ast_channel.digits);
       if (!ast_strlen_zero(pvt->channel->config.language)) {
-         ast_channel_language_set(tmp, pvt->channel->config.language);
+         alsa_input_ast_channel_language_set(tmp, pvt->channel->config.language);
       }
       if (AST_STATE_RING == ast_state) {
-         ast_channel_rings_set(tmp, 1);
+         alsa_input_ast_channel_rings_set(tmp, 1);
+      }
+      /* Don't use ast_set_callerid() here because it will
+       * generate a NewCallerID event before the NewChannel event */
+      if (!ast_strlen_zero(pvt->line_cfg->cid_num)) {
+         alsa_input_ast_channel_caller(tmp)->ani.number.valid = 1;
+         ast_free(alsa_input_ast_channel_caller(tmp)->ani.number.str);
+         alsa_input_ast_channel_caller(tmp)->ani.number.str = ast_strdup(pvt->line_cfg->cid_num);
       }
       ast_jb_configure(tmp, &(pvt->line_cfg->jb_conf));
 
-      ast_channel_tech_pvt_set(tmp, pvt);
+      alsa_input_ast_channel_tech_pvt_set(tmp, pvt);
       ast_module_ref(ast_module_info->self);
       pvt->owner = tmp;
 
@@ -1894,7 +2280,7 @@ static void alsa_input_new(alsa_input_pvt_t *pvt,
       ast_channel_unlock(tmp);
 
       if ((!hangup) && (AST_STATE_DOWN != ast_state) && (ast_pbx_start(tmp))) {
-         ast_log(AST_LOG_ERROR, "Unable to start PBX on '%s'\n", ast_channel_name(tmp));
+         ast_log(AST_LOG_ERROR, "Unable to start PBX on '%s'\n", alsa_input_ast_channel_name(tmp));
          hangup = true;
       }
       /*
@@ -1934,7 +2320,7 @@ static void alsa_input_new(alsa_input_pvt_t *pvt,
       }
    }
    else {
-      ast_log(AST_LOG_ERROR, "Unable to allocate channel structure\n");
+      ast_log(AST_LOG_ERROR, "Unable to allocate ast_channel structure\n");
       if (AST_STATE_DOWN != ast_state) {
          alsa_input_assert(AI_ST_OFF_WAITING_ANSWER == state);
          /* We signals the user that there's a problem */
@@ -1950,7 +2336,7 @@ static void alsa_input_new(alsa_input_pvt_t *pvt,
 
 /* Must be call with pvt->owner locked. */
 static int alsa_input_setup(alsa_input_pvt_t *pvt,
-   const struct ast_format *format, enum ast_channel_state ast_state,
+   const alsa_input_ast_format *format, enum ast_channel_state ast_state,
    alsa_input_event_t cause)
 {
    int ret = 0;
@@ -1960,16 +2346,13 @@ static int alsa_input_setup(alsa_input_pvt_t *pvt,
 
    alsa_input_assert((NULL != pvt->owner) && (pvt->owner_lock_count > 0));
    do { /* Empty loop */
-      struct ast_format tmpfmt;
-
       if (NULL == format) {
          ast_log(AST_LOG_WARNING, "No format specified\n");
          ret = -1;
          break;
       }
-      ast_format_set(&(tmpfmt), AST_SAMPLE_FORMAT, 0);
-      if (AST_FORMAT_CMP_EQUAL != ast_format_cmp(&(tmpfmt), format)) {
-         ast_log(AST_LOG_WARNING, "Can't do format '%s'\n", ast_getformatname(format));
+      if (!alsa_input_ast_formats_are_equal(ast_format_slin, format)) {
+         ast_log(AST_LOG_WARNING, "Can't do format '%s'\n", alsa_input_ast_format_get_name(format));
          ret = -1;
          break;
       }
@@ -2029,7 +2412,7 @@ static bool alsa_input_read_data(alsa_input_pvt_t *pvt,
                pvt->ast_channel.frame_to_queue.datalen = pvt->ast_channel.offset_buf_fr_to_queue;
                pvt->ast_channel.frame_to_queue.samples = pvt->ast_channel.frame_to_queue.datalen / SAMPLE_SIZE;
                pvt->ast_channel.frame_to_queue.frametype = AST_FRAME_VOICE;
-               ast_format_set(&(pvt->ast_channel.frame_to_queue.subclass.format), AST_SAMPLE_FORMAT, 0);
+               alsa_input_ast_set_frame_format(&(pvt->ast_channel.frame_to_queue), ast_format_slin);
                pvt->ast_channel.frame_to_queue.src = alsa_input_chan_type;
                pvt->ast_channel.frame_to_queue.offset = 0;
                pvt->ast_channel.frame_to_queue.mallocd = 0;
@@ -2051,7 +2434,7 @@ static bool alsa_input_read_data(alsa_input_pvt_t *pvt,
                pvt->ast_channel.frame.datalen = pvt->ast_channel.offset_buf_fr_to_queue;
                pvt->ast_channel.frame.samples = pvt->ast_channel.frame.datalen / SAMPLE_SIZE;
                pvt->ast_channel.frame.frametype = AST_FRAME_VOICE;
-               ast_format_set(&(pvt->ast_channel.frame.subclass.format), AST_SAMPLE_FORMAT, 0);
+               alsa_input_ast_set_frame_format(&(pvt->ast_channel.frame), ast_format_slin);
                pvt->ast_channel.frame.src = alsa_input_chan_type;
                pvt->ast_channel.frame.offset = AST_FRIENDLY_OFFSET;
                pvt->ast_channel.frame.mallocd = 0;
@@ -2116,17 +2499,17 @@ static void alsa_input_handle_status_change(alsa_input_pvt_t *pvt,
          */
          bool hangup = true;
          if (AI_ST_ON_RINGING == pvt->ast_channel.state) {
-            alsa_input_assert(AST_STATE_RINGING == ast_channel_state(pvt->owner));
+            alsa_input_assert(AST_STATE_RINGING == alsa_input_ast_channel_state(pvt->owner));
             /* The user wants to answer the call */
-            if (alsa_input_setup(pvt, ast_channel_rawreadformat(pvt->owner), AST_STATE_UP, AI_EV_OFF_HOOK)) {
-               ast_log(AST_LOG_ERROR, "Unable to answer the call on '%s'\n", ast_channel_name(pvt->owner));
+            if (alsa_input_setup(pvt, alsa_input_ast_channel_rawreadformat(pvt->owner), AST_STATE_UP, AI_EV_OFF_HOOK)) {
+               ast_log(AST_LOG_ERROR, "Unable to answer the call on '%s'\n", alsa_input_ast_channel_name(pvt->owner));
             }
             else {
                if (ast_queue_control(pvt->owner, AST_CONTROL_ANSWER)) {
-                  ast_log(AST_LOG_ERROR, "Unable to answer the call on '%s'\n", ast_channel_name(pvt->owner));
+                  ast_log(AST_LOG_ERROR, "Unable to answer the call on '%s'\n", alsa_input_ast_channel_name(pvt->owner));
                }
                else {
-                  alsa_input_pr_debug("Call answered on '%s'\n", ast_channel_name(pvt->owner));
+                  alsa_input_pr_debug("Call answered on '%s'\n", alsa_input_ast_channel_name(pvt->owner));
                   hangup = false;
                   alsa_input_change_monitor_timeout(monitor_prms, alsa_input_monitor_busy_period);
                }
@@ -2165,6 +2548,9 @@ static void alsa_input_handle_status_change(alsa_input_pvt_t *pvt,
             */
             pvt->ast_channel.digits_len = 0;
             alsa_input_new(pvt, AI_ST_OFF_WAITING_ANSWER, AI_EV_OFF_HOOK,
+#if (AST_VERSION > 110)
+               NULL,
+#endif /* (AST_VERSION > 110) */
                NULL, &(monitor_prms->channel_is_locked));
          }
       }
@@ -2217,9 +2603,10 @@ static void alsa_input_handle_mute_change(alsa_input_pvt_t *pvt,
  Must be called with monitor.lock locked and pvt->owner set to NULL.
 */
 static void alsa_input_search_extension(alsa_input_pvt_t *pvt,
-   alsa_input_monitor_prms_t *monitor_prms)
+   alsa_input_monitor_prms_t *monitor_prms, bool ignore_timeout)
 {
-   /* alsa_input_pr_debug("alsa_input_search_extension()\n"); */
+   /* alsa_input_pr_debug("alsa_input_search_extension(ignore_timeout=%d)\n",
+      (int)(ignore_timeout)); */
 
    alsa_input_assert((pvt->channel->monitor.lock_count > 0)
       && (NULL == pvt->owner) && (pvt->line_cfg->monitor_dialing)
@@ -2230,24 +2617,32 @@ static void alsa_input_search_extension(alsa_input_pvt_t *pvt,
       if (!pvt->ast_channel.search_extension) {
          break;
       }
-      if (pvt->line_cfg->dialing_timeout > 0) {
-         struct timeval now = ast_tvnow();
-         int64_t tvdiff = ast_tvdiff_ms(now, pvt->ast_channel.tv_wait);
-         if (tvdiff < pvt->line_cfg->dialing_timeout) {
-            alsa_input_change_monitor_timeout(monitor_prms, (int)(pvt->line_cfg->dialing_timeout - tvdiff));
-            break;
-         }
-      }
-      pvt->ast_channel.search_extension = false;
-      /* We test if, with these numbers, the extension is valid */
       alsa_input_assert(pvt->ast_channel.digits_len < ARRAY_LEN(pvt->ast_channel.digits));
       if (pvt->ast_channel.digits_len <= 0) {
+         if ((!ignore_timeout) && (pvt->line_cfg->dialing_timeout_1st_digit > 0)) {
+            struct timeval now = ast_tvnow();
+            int64_t tvdiff = ast_tvdiff_ms(now, pvt->ast_channel.tv_wait);
+            if (tvdiff < pvt->line_cfg->dialing_timeout_1st_digit) {
+               alsa_input_change_monitor_timeout(monitor_prms, (int)(pvt->line_cfg->dialing_timeout_1st_digit - tvdiff));
+               break;
+            }
+         }
          alsa_input_assert(ARRAY_LEN(alsa_input_default_extension) <= ARRAY_LEN(pvt->ast_channel.digits));
          strcpy(pvt->ast_channel.digits, alsa_input_default_extension);
       }
       else {
+         if ((!ignore_timeout) && (pvt->line_cfg->dialing_timeout > 0)) {
+            struct timeval now = ast_tvnow();
+            int64_t tvdiff = ast_tvdiff_ms(now, pvt->ast_channel.tv_wait);
+            if (tvdiff < pvt->line_cfg->dialing_timeout) {
+               alsa_input_change_monitor_timeout(monitor_prms, (int)(pvt->line_cfg->dialing_timeout - tvdiff));
+               break;
+            }
+         }
          pvt->ast_channel.digits[pvt->ast_channel.digits_len] = '\0';
       }
+      pvt->ast_channel.search_extension = false;
+      /* We test if, with these numbers, the extension is valid */
       alsa_input_pr_debug("Searching for extension '%s' in context '%s'\n",
          pvt->ast_channel.digits, pvt->line_cfg->context);
       /*
@@ -2259,6 +2654,9 @@ static void alsa_input_search_extension(alsa_input_pvt_t *pvt,
          /* It's a valid extension in its context, get moving! */
          alsa_input_pr_debug("Extension '%s' found in context '%s'\n", pvt->ast_channel.digits, pvt->line_cfg->context);
          alsa_input_new(pvt, AI_ST_OFF_WAITING_ANSWER, AI_EV_EXT_FOUND,
+#if (AST_VERSION > 110)
+            NULL,
+#endif /* (AST_VERSION > 110) */
             NULL, &(monitor_prms->channel_is_locked));
       }
       else {
@@ -2330,7 +2728,7 @@ static void alsa_input_try_to_send_dtmf(alsa_input_pvt_t *pvt,
        and AST_FRAME_DTMF_END (it does it only when processing
        a frame)
       */
-      if (AST_STATE_UP == ast_channel_state(pvt->owner)) {
+      if (AST_STATE_UP == alsa_input_ast_channel_state(pvt->owner)) {
          if (ast_queue_frame(pvt->owner, &(ast_null_frame))) {
             ast_log(AST_LOG_WARNING, "Can't queue null frame for line %lu\n", (unsigned long)(pvt->index_line + 1));
          }
@@ -2389,20 +2787,35 @@ static void alsa_input_handle_digit(alsa_input_pvt_t *pvt,
       alsa_input_assert((NULL == pvt->owner) && (pvt->line_cfg->monitor_dialing));
       do { /* Empty loop */
          /* We search for an extension before adding new digit */
-         alsa_input_search_extension(pvt, monitor_prms);
+         alsa_input_search_extension(pvt, monitor_prms, false);
          if ((AI_ST_OFF_DIALING != pvt->ast_channel.state) || (!monitor_prms->channel_is_locked)) {
             break;
          }
          if (pvt->ast_channel.digits_len < (ARRAY_LEN(pvt->ast_channel.digits) - 1)) {
-            pvt->ast_channel.digits[pvt->ast_channel.digits_len] = digit;
             if (0 == pvt->ast_channel.digits_len) {
                /* We switch off the AI_TONE_WAITING_DIAL tone */
                alsa_input_set_line_tone(pvt, AI_TONE_NONE, 0);
             }
+            /*
+             If the digit is equal to pvt->line_cfg->search_extension_trigger,
+             we search for an extension now, without adding the digit
+            */
+            alsa_input_assert('\0' != digit);
+            if (/* ('\0' != pvt->line_cfg->search_extension_trigger)
+                && */(digit == pvt->line_cfg->search_extension_trigger)) {
+               pvt->ast_channel.search_extension = true;
+               alsa_input_search_extension(pvt, monitor_prms, true);
+               alsa_input_assert(!pvt->ast_channel.search_extension);
+               if ((AI_ST_OFF_DIALING != pvt->ast_channel.state) || (!monitor_prms->channel_is_locked)) {
+                  break;
+               }
+            }
+            pvt->ast_channel.digits[pvt->ast_channel.digits_len] = digit;
             pvt->ast_channel.digits_len += 1;
+            /* If there's no timeout, we search for an extension now */
             if (pvt->line_cfg->dialing_timeout <= 0) {
                pvt->ast_channel.search_extension = true;
-               alsa_input_search_extension(pvt, monitor_prms);
+               alsa_input_search_extension(pvt, monitor_prms, true);
                alsa_input_assert(!pvt->ast_channel.search_extension);
                if ((AI_ST_OFF_DIALING != pvt->ast_channel.state) || (!monitor_prms->channel_is_locked)) {
                   break;
@@ -2447,7 +2860,7 @@ static void alsa_input_monitor_pvt(alsa_input_pvt_t *pvt,
    }
    else if (AI_ST_OFF_DIALING == pvt->ast_channel.state) {
       alsa_input_assert((NULL == pvt->owner) && (pvt->line_cfg->monitor_dialing));
-      alsa_input_search_extension(pvt, monitor_prms);
+      alsa_input_search_extension(pvt, monitor_prms, false);
    }
    else if (AI_ST_OFF_NO_SERVICE == pvt->ast_channel.state) {
       struct timeval now = ast_tvnow();
@@ -2880,10 +3293,10 @@ static int alsa_input_start_monitor(alsa_input_chan_t *t)
 
 static inline alsa_input_pvt_t *alsa_input_get_pvt(struct ast_channel *ast)
 {
-   alsa_input_pvt_t *pvt = ast_channel_tech_pvt(ast);
+   alsa_input_pvt_t *pvt = alsa_input_ast_channel_tech_pvt(ast);
 
    if ((NULL == pvt) || (pvt->owner != ast)) {
-      ast_log(AST_LOG_WARNING, "Channel '%s' unlink or link to another line\n", ast_channel_name(ast));
+      ast_log(AST_LOG_WARNING, "Channel '%s' unlink or link to another line\n", alsa_input_ast_channel_name(ast));
       pvt = NULL;
    }
    return (pvt);
@@ -2898,12 +3311,18 @@ static inline alsa_input_pvt_t *alsa_input_get_pvt(struct ast_channel *ast)
  * \retval 0 on success
  * \retval -1 on failure
  */
-static int alsa_input_chan_call(struct ast_channel *ast, const char *addr, int timeout)
+static int alsa_input_chan_call(struct ast_channel *ast,
+#if (AST_VERSION < 110)
+   char *addr,
+#else /* (AST_VERSION >= 110) */
+   const char *addr,
+#endif /* (AST_VERSION >= 110)*/
+   int timeout)
 {
    int ret = -1;
    alsa_input_pvt_t *pvt = alsa_input_get_pvt(ast);
 
-   alsa_input_pr_debug("alsa_input_chan_call(ast='%s', addr='%s', timeout=%d)\n", ast_channel_name(ast), addr, (int)(timeout));
+   alsa_input_pr_debug("alsa_input_chan_call(ast='%s', addr='%s', timeout=%d)\n", alsa_input_ast_channel_name(ast), addr, (int)(timeout));
 
    if (NULL != pvt) {
 #ifdef DEBUG
@@ -2913,37 +3332,37 @@ static int alsa_input_chan_call(struct ast_channel *ast, const char *addr, int t
       do { /* Empty loop */
          /* If phone is off hook, call() is not allowed */
          if (AI_STATUS_ON_HOOK != pvt->ast_channel.status) {
-            ast_log(AST_LOG_NOTICE, "'%s' is busy\n", ast_channel_name(ast));
+            ast_log(AST_LOG_NOTICE, "'%s' is busy\n", alsa_input_ast_channel_name(ast));
             ast_setstate(ast, AST_STATE_BUSY);
             ast_queue_control(ast, AST_CONTROL_BUSY);
          }
          else {
             char number[20];
             char name[80];
-            enum ast_channel_state ast_state = ast_channel_state(ast);
+            enum ast_channel_state ast_state = alsa_input_ast_channel_state(ast);
 
             if ((AST_STATE_DOWN != ast_state) && (AST_STATE_RESERVED != ast_state)) {
                ast_log(AST_LOG_WARNING, "alsa_input_chan_call() called on '%s', neither down nor reserved\n",
-                  ast_channel_name(ast));
+                  alsa_input_ast_channel_name(ast));
                break;
             }
 
             /* the standard format of ast->callerid is:  "name" <number>, but not always complete */
-            if ((!ast_channel_connected(ast)->id.name.valid)
-                || (ast_strlen_zero(ast_channel_connected(ast)->id.name.str))) {
+            if ((!alsa_input_ast_channel_connected(ast)->id.name.valid)
+                || (ast_strlen_zero(alsa_input_ast_channel_connected(ast)->id.name.str))) {
                strcpy(name, "unknown");
             }
             else {
-               ast_copy_string(name, ast_channel_connected(ast)->id.name.str, sizeof(name));
+               ast_copy_string(name, alsa_input_ast_channel_connected(ast)->id.name.str, sizeof(name));
             }
 
             number[0] = '\0';
-            if ((ast_channel_connected(ast)->id.number.valid) && (ast_channel_connected(ast)->id.number.str)) {
-               ast_copy_string(number, ast_channel_connected(ast)->id.number.str, sizeof(number));
+            if ((alsa_input_ast_channel_connected(ast)->id.number.valid) && (alsa_input_ast_channel_connected(ast)->id.number.str)) {
+               ast_copy_string(number, alsa_input_ast_channel_connected(ast)->id.number.str, sizeof(number));
             }
 
             alsa_input_pr_debug("Ringing '%s' on '%s' (with CID '%s', '%s')\n",
-               addr, ast_channel_name(ast), number, name);
+               addr, alsa_input_ast_channel_name(ast), number, name);
 
             ast_setstate(ast, AST_STATE_RINGING);
             ast_queue_control(ast, AST_CONTROL_RINGING);
@@ -2971,7 +3390,7 @@ static int alsa_input_chan_answer(struct ast_channel *ast)
    alsa_input_pvt_t *pvt = alsa_input_get_pvt(ast);
 
    /* Remote end has answered the call */
-   alsa_input_pr_debug("alsa_input_chan_answer(ast='%s')\n", ast_channel_name(ast));
+   alsa_input_pr_debug("alsa_input_chan_answer(ast='%s')\n", alsa_input_ast_channel_name(ast));
 
    if (NULL != pvt) {
 #ifdef DEBUG
@@ -2980,15 +3399,15 @@ static int alsa_input_chan_answer(struct ast_channel *ast)
 #endif /* DEBUG */
       /* If phone not off hook, answer() is not allowed */
       if (AI_STATUS_OFF_HOOK != pvt->ast_channel.status) {
-         ast_log(AST_LOG_WARNING, "Channel '%s' can't answer now, because not off hook\n", ast_channel_name(ast));
+         ast_log(AST_LOG_WARNING, "Channel '%s' can't answer now, because not off hook\n", alsa_input_ast_channel_name(ast));
       }
       else {
          /* We accept that answer() can be called if AI_ST_OFF_TALKING == pvt->ast_channel.state */
          if (AI_ST_OFF_TALKING != pvt->ast_channel.state) {
             alsa_input_assert(AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state);
-            ret = alsa_input_setup(pvt, ast_channel_rawreadformat(pvt->owner), AST_STATE_UP, AI_EV_AST_ANSWER);
+            ret = alsa_input_setup(pvt, alsa_input_ast_channel_rawreadformat(pvt->owner), AST_STATE_UP, AI_EV_AST_ANSWER);
             if (!ret) {
-               ast_channel_rings_set(pvt->owner, 0);
+               alsa_input_ast_channel_rings_set(pvt->owner, 0);
             }
          }
       }
@@ -3010,7 +3429,7 @@ static int alsa_input_chan_fixup(struct ast_channel *old_chan, struct ast_channe
    alsa_input_pvt_t *pvt = alsa_input_get_pvt(old_chan);
 
    alsa_input_pr_debug("alsa_input_chan_fixup(oldchan='%s', newchan='%s')\n",
-      ast_channel_name(old_chan), ast_channel_name(new_chan));
+      alsa_input_ast_channel_name(old_chan), alsa_input_ast_channel_name(new_chan));
 
    if (NULL != pvt) {
 #ifdef DEBUG
@@ -3041,7 +3460,7 @@ static int alsa_input_chan_fixup(struct ast_channel *old_chan, struct ast_channe
  */
 static int alsa_input_chan_digit_begin(struct ast_channel *ast, char digit)
 {
-   alsa_input_pr_debug("alsa_input_chan_digit_begin(ast='%s', digit='%c')\n", ast_channel_name(ast), (char)(digit));
+   alsa_input_pr_debug("alsa_input_chan_digit_begin(ast='%s', digit='%c')\n", alsa_input_ast_channel_name(ast), (char)(digit));
 
    /* Done in alsa_input_chan_digit_end() */
 
@@ -3060,7 +3479,7 @@ static int alsa_input_chan_digit_end(struct ast_channel *ast, char digit, unsign
    alsa_input_tone_t tone;
 
    alsa_input_pr_debug("alsa_input_chan_digit_end(ast='%s', digit='%c', duration=%u)\n",
-      ast_channel_name(ast), (char)(digit), (unsigned int)(duration));
+      alsa_input_ast_channel_name(ast), (char)(digit), (unsigned int)(duration));
 
    ast_channel_lock(ast);
    pvt = alsa_input_get_pvt(ast);
@@ -3195,7 +3614,9 @@ static int alsa_input_chan_indicate(struct ast_channel *ast, int condition, cons
             case AST_CONTROL_CONGESTION:
             case AST_CONTROL_RINGING:
             case AST_CONTROL_INCOMPLETE:
+#if (AST_VERSION >= 110)
             case AST_CONTROL_PVT_CAUSE_CODE:
+#endif /* (AST_VERSION >= 110) */
             case -1: {
                ret = -1;  /* Ask for inband indications */
                break;
@@ -3218,7 +3639,7 @@ static int alsa_input_chan_indicate(struct ast_channel *ast, int condition, cons
             }
             default: {
                ast_log(AST_LOG_WARNING, "Don't know how to indicate condition %d on '%s'\n",
-                  (int)(condition), ast_channel_name(ast));
+                  (int)(condition), alsa_input_ast_channel_name(ast));
                ret = -1;
                break;
             }
@@ -3245,7 +3666,7 @@ static struct ast_frame *alsa_input_chan_read(struct ast_channel *ast)
    struct ast_frame *ret = &(ast_null_frame);
    alsa_input_pvt_t *pvt = alsa_input_get_pvt(ast);
 
-   /* alsa_input_pr_debug("alsa_input_chan_read(ast='%s')\n", ast_channel_name(ast)); */
+   /* alsa_input_pr_debug("alsa_input_chan_read(ast='%s')\n", alsa_input_ast_channel_name(ast)); */
    if (NULL != pvt) {
 #ifdef DEBUG
       pvt->owner_lock_count += 1;
@@ -3253,7 +3674,7 @@ static struct ast_frame *alsa_input_chan_read(struct ast_channel *ast)
 #endif /* DEBUG */
       do { /* Empty loop */
          if ((AI_STATUS_OFF_HOOK != pvt->ast_channel.status)
-             || (AST_STATE_UP != ast_channel_state(pvt->owner))) {
+             || (AST_STATE_UP != alsa_input_ast_channel_state(pvt->owner))) {
             /* Don't try to send audio on-hook */
             ast_log(AST_LOG_WARNING, "Trying to receive audio while not off hook\n");
             break;
@@ -3286,7 +3707,7 @@ static int alsa_input_chan_write(struct ast_channel *ast, struct ast_frame *fram
    int ret = 0;
    alsa_input_pvt_t *pvt = alsa_input_get_pvt(ast);
 
-   /* alsa_input_pr_debug("alsa_input_chan_write(ast='%s')\n", ast_channel_name(ast)); */
+   /* alsa_input_pr_debug("alsa_input_chan_write(ast='%s')\n", alsa_input_ast_channel_name(ast)); */
    if (NULL != pvt) {
 #ifdef DEBUG
       pvt->owner_lock_count += 1;
@@ -3299,7 +3720,6 @@ static int alsa_input_chan_write(struct ast_channel *ast, struct ast_frame *fram
          size_t tmp;
          size_t to_write;
          snd_pcm_sframes_t written;
-         struct ast_format tmpfmt;
 
          /* Write a frame of (presumably voice) data */
          if (AST_FRAME_VOICE != frame->frametype) {
@@ -3312,15 +3732,16 @@ static int alsa_input_chan_write(struct ast_channel *ast, struct ast_frame *fram
             break;
          }
 
-         if (AST_FORMAT_CMP_EQUAL != ast_format_cmp(ast_format_set(&(tmpfmt), AST_SAMPLE_FORMAT, 0), &(frame->subclass.format))) {
-            ast_log(AST_LOG_WARNING, "Cannot handle frames in '%s' format\n", ast_getformatname(&(frame->subclass.format)));
+         if (!alsa_input_ast_formats_are_equal(ast_format_slin, alsa_input_ast_get_frame_format(frame))) {
+            ast_log(AST_LOG_WARNING, "Cannot handle frames in '%s' format\n",
+               alsa_input_ast_format_get_name(alsa_input_ast_get_frame_format(frame)));
             ret = -1;
             break;
          }
 
          if ((AI_STATUS_OFF_HOOK != pvt->ast_channel.status)
              || (AI_ST_OFF_DIALING == pvt->ast_channel.state)
-             /* || (AST_STATE_UP != ast_channel_state(pvt->owner)) */) {
+             /* || (AST_STATE_UP != alsa_input_ast_channel_state(pvt->owner)) */) {
             /* Don't try to send audio on-hook */
             ast_log(AST_LOG_WARNING, "Trying to send audio while not off hook or not in correct state\n");
             break;
@@ -3447,14 +3868,14 @@ static int alsa_input_chan_write(struct ast_channel *ast, struct ast_frame *fram
  */
 static int alsa_input_chan_hangup(struct ast_channel *ast)
 {
-   alsa_input_pvt_t *pvt = ast_channel_tech_pvt(ast);
+   alsa_input_pvt_t *pvt = alsa_input_ast_channel_tech_pvt(ast);
 
-   alsa_input_pr_debug("alsa_input_chan_hangup(ast='%s')\n", ast_channel_name(ast));
+   alsa_input_pr_debug("alsa_input_chan_hangup(ast='%s')\n", alsa_input_ast_channel_name(ast));
 
    if ((NULL == pvt) || (pvt->owner != ast)) {
-      alsa_input_pr_debug("Channel '%s' unlink or link to another line\n", ast_channel_name(ast));
+      alsa_input_pr_debug("Channel '%s' unlink or link to another line\n", alsa_input_ast_channel_name(ast));
       if ((NULL != pvt) && (NULL == pvt->owner)) {
-         ast_channel_tech_pvt_set(ast, NULL);
+         alsa_input_ast_channel_tech_pvt_set(ast, NULL);
       }
    }
    else {
@@ -3476,7 +3897,7 @@ static int alsa_input_chan_hangup(struct ast_channel *ast)
       pvt->owner_lock_count -= 1;
 #endif /* DEBUG */
    }
-   alsa_input_pr_debug("'%s' hung up\n", ast_channel_name(ast));
+   alsa_input_pr_debug("'%s' hung up\n", alsa_input_ast_channel_name(ast));
    ast_setstate(ast, AST_STATE_DOWN);
 
    return (0);
@@ -3661,7 +4082,22 @@ static alsa_input_pvt_t *alsa_input_add_pvt(alsa_input_chan_t *t, size_t index_l
    return (tmp);
 }
 
-static struct ast_channel *alsa_input_chan_request(const char *type, struct ast_format_cap *cap, const struct ast_channel *requestor, const char *data, int *cause);
+static struct ast_channel *alsa_input_chan_request(const char *type,
+#if (AST_VERSION < 110)
+   format_t cap,
+#else /* (AST_VERSION >= 110) */
+   alsa_input_ast_format_cap *cap,
+#endif /* (AST_VERSION >= 110)*/
+#if (AST_VERSION > 110)
+   const struct ast_assigned_ids *assigned_ids,
+#endif /* (AST_VERSION > 110) */
+   const struct ast_channel *requestor,
+#if (AST_VERSION < 110)
+   void *addr,
+#else /* (AST_VERSION >= 110) */
+   const char *addr,
+#endif /* (AST_VERSION >= 110)*/
+   int *cause);
 
 static alsa_input_chan_t alsa_input_chan = {
    .chan_tech = {
@@ -3698,12 +4134,28 @@ static alsa_input_chan_t alsa_input_chan = {
  * \retval non-NULL channel on success
  */
 static struct ast_channel *alsa_input_chan_request(const char *type,
-   struct ast_format_cap *cap, const struct ast_channel *requestor,
-   const char *addr, int *cause)
+#if (AST_VERSION < 110)
+   format_t cap,
+#else /* (AST_VERSION >= 110) */
+   alsa_input_ast_format_cap *cap,
+#endif /* (AST_VERSION >= 110)*/
+#if (AST_VERSION > 110)
+   const struct ast_assigned_ids *assigned_ids,
+#endif /* (AST_VERSION > 110) */
+   const struct ast_channel *requestor,
+#if (AST_VERSION < 110)
+   void *_addr,
+#else /* (AST_VERSION >= 110) */
+   const char *addr,
+#endif /* (AST_VERSION >= 110)*/
+   int *cause)
 {
    struct ast_channel *ret = NULL;
    alsa_input_chan_t *t = &(alsa_input_chan);
    alsa_input_pvt_t *pvt;
+#if (AST_VERSION < 110)
+   const char *addr = _addr;
+#endif /* (AST_VERSION < 110) */
 
    alsa_input_pr_debug("alsa_input_chan_request(type='%s', addr='%s')\n", type, addr);
 
@@ -3721,11 +4173,20 @@ static struct ast_channel *alsa_input_chan_request(const char *type,
          sprintf(tmp, "%lu", (unsigned long)(pvt->index_line + 1));
          length = strlen(tmp);
          if ((0 == strncmp(addr, tmp, length)) && (!isalnum(addr[length]))) {
-            if (ast_format_cap_has_joint(cap, pvt->channel->chan_tech.capabilities)) {
+#if (AST_VERSION < 110)
+            if (alsa_input_ast_format_cap_iscompatible_cap(&(cap), alsa_input_get_chan_tech_cap(&(pvt->channel->chan_tech)))) {
+#else /* (AST_VERSION >= 110) */
+            if (alsa_input_ast_format_cap_iscompatible_cap(cap, alsa_input_get_chan_tech_cap(&(pvt->channel->chan_tech)))) {
+#endif /* (AST_VERSION >= 110)*/
                if ((NULL == pvt->owner) && (AI_STATUS_ON_HOOK == pvt->ast_channel.status)) {
                   alsa_input_assert(AI_ST_ON_IDLE == pvt->ast_channel.state);
                   alsa_input_new(pvt, AI_ST_ON_PRE_RINGING, AI_EV_AST_REQUEST,
-                     ((NULL != requestor) ? ast_channel_linkedid(requestor) : NULL), NULL);
+#if (AST_VERSION <= 110)
+                     ((NULL != requestor) ? alsa_input_ast_channel_linkedid(requestor) : NULL),
+#else /* (AST_VERSION > 110) */
+                     assigned_ids, requestor,
+#endif /* (AST_VERSION > 110) */
+                     NULL);
                   ret = pvt->owner;
                }
                else {
@@ -3734,8 +4195,13 @@ static struct ast_channel *alsa_input_chan_request(const char *type,
                }
             }
             else {
+#if (AST_VERSION <= 110)
                char buf[256];
                ast_log(AST_LOG_WARNING, "Asked to get a channel of unsupported format '%s'\n", ast_getformatname_multiple(buf, sizeof(buf), cap));
+#else /* (AST_VERSION > 110) */
+               struct ast_str *buf = ast_str_alloca(256);
+               ast_log(AST_LOG_WARNING, "Asked to get a channel of unsupported format '%s'\n", ast_format_cap_get_names(cap, &(buf)));
+#endif /* (AST_VERSION > 110) */
             }
             break;
          }
@@ -4032,9 +4498,12 @@ static int __unload_module(void)
          /* Nothing to do */
       }
 
+#if (AST_VERSION >= 110)
       if (NULL != t->chan_tech.capabilities) {
-         t->chan_tech.capabilities = ast_format_cap_destroy(t->chan_tech.capabilities);
+         alsa_input_ast_format_cap_destroy(t->chan_tech.capabilities);
+         t->chan_tech.capabilities = NULL;
       }
+#endif /* (AST_VERSION >= 110) */
 
       ast_mutex_destroy(&(t->monitor.lock));
 
@@ -4056,6 +4525,7 @@ static int load_module(void)
    struct ast_config *cfg = CONFIG_STATUS_FILEINVALID;
    size_t i;
 
+   alsa_input_init_cache_ast_format();
    alsa_input_init_tones();
 
    memset(&(t->config), 0, sizeof(t->config));
@@ -4070,31 +4540,42 @@ static int load_module(void)
 #ifdef DEBUG
    t->monitor.lock_count = 0;
 #endif /* DEBUG */
+#if (AST_VERSION < 110)
+   t->chan_tech.capabilities = 0;
+#else /* (AST_VERSION >= 110) */
    t->chan_tech.capabilities = NULL;
+#endif /* (AST_VERSION >= 110)*/
    for (i = 0; (i < ARRAY_LEN(t->config.line_cfgs)); i += 1) {
       alsa_input_line_config_t *line_cfg = &(t->config.line_cfgs[i]);
       memcpy(&(line_cfg->jb_conf), &(default_jb_conf), sizeof(line_cfg->jb_conf));
+      line_cfg->enable = false;
       line_cfg->snd_capture_dev_name[0] = '\0';
       line_cfg->snd_playback_dev_name[0] = '\0';
       line_cfg->ev_in_dev_name[0] = '\0';
       line_cfg->ev_out_dev_name[0] = '\0';
-      line_cfg->context[0] = '\0';
-      line_cfg->cid_name[0] = '\0';
-      line_cfg->cid_num[0] = '\0';
-      line_cfg->moh_interpret[0] = '\0';
+      line_cfg->monitor_dialing = false;
+      line_cfg->search_extension_trigger = '\0';
+      line_cfg->dialing_timeout_1st_digit = 5000;
+      line_cfg->dialing_timeout = 3000;
+      sprintf(line_cfg->context, "ai-line-%d", (int)(i + 1));
+      sprintf(line_cfg->cid_name, "line%d", (int)(i + 1));
+      sprintf(line_cfg->cid_num, "00-00-00-%02d", (int)(i + 1));
+      ast_copy_string(line_cfg->moh_interpret, "default", ARRAY_LEN(line_cfg->moh_interpret));
    }
 
    do { /* Empty loop */
       struct ast_variable *v;
       struct ast_flags config_flags = { 0 };
-      struct ast_format tmpfmt;
 
-      t->chan_tech.capabilities = ast_format_cap_alloc();
+#if (AST_VERSION >= 110)
+      t->chan_tech.capabilities = alsa_input_ast_format_cap_alloc();
       if (NULL == t->chan_tech.capabilities) {
          ret = AST_MODULE_LOAD_DECLINE;
          break;
       }
-      ast_format_cap_add(t->chan_tech.capabilities, ast_format_set(&(tmpfmt), AST_SAMPLE_FORMAT, 0));
+#endif /* (AST_VERSION >= 110) */
+      alsa_input_ast_format_cap_remove_by_type(alsa_input_get_chan_tech_cap(&(t->chan_tech)), AST_MEDIA_TYPE_UNKNOWN);
+      alsa_input_ast_format_cap_append_format(alsa_input_get_chan_tech_cap(&(t->chan_tech)), ast_format_slin);
 
       alsa_input_pr_debug("Reading configuration file '%s'\n", alsa_input_cfg_file);
 
@@ -4178,6 +4659,32 @@ static int load_module(void)
                else {
                   line_cfg->monitor_dialing = false;
                }
+            }
+            else if (!strcasecmp(v->name, "search_extension_trigger")) {
+               char value[32];
+               char *f;
+
+               ast_copy_string(value, v->value, ARRAY_LEN(value));
+               f = ast_strip(value);
+               if (('\0' == f[0]) || ('\0' == f[1])) {
+                  line_cfg->search_extension_trigger = f[0];
+               }
+               else {
+                  ast_log(AST_LOG_ERROR, "Invalid value for variable 'search_extension_trigger' in section '%s' of config file '%s'\n",
+                     section, alsa_input_cfg_file);
+                  ret = AST_MODULE_LOAD_DECLINE;
+                  break;
+               }
+            }
+            else if (!strcasecmp(v->name, "dialing_timeout_1st_digit")) {
+               int tmp;
+               if ((1 != sscanf(v->value, " %10d ", &(tmp))) || (tmp < 0)) {
+                  ast_log(AST_LOG_ERROR, "Invalid value for variable 'dialing_timeout_1st_digit' in section '%s' of config file '%s'\n",
+                     section, alsa_input_cfg_file);
+                  ret = AST_MODULE_LOAD_DECLINE;
+                  break;
+               }
+               line_cfg->dialing_timeout_1st_digit = tmp;
             }
             else if (!strcasecmp(v->name, "dialing_timeout")) {
                int tmp;

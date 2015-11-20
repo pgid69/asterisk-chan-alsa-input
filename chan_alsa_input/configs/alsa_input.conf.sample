@@ -30,10 +30,21 @@ context = ai-line-1
 ; the dialed extension
 ; If 0, starts PBX immediately when phone goes off hook
 monitor_dialing = 1
-; If monitor_dialing = 1, if a digit is dialed, the channel waits the
-; following timeout before searching if all the digits dialed form a
-; valid extension
-dialing_timeout = 5000
+; If monitor_dialing = 1, character that trigger the search for a valid
+; extension immediately (instead of waiting dialing_timeout).
+; When searching for the extension the character is not included.
+; If no extension is found the channel adds the character and waits for
+; another digit
+search_extension_trigger = #
+; If monitor_dialing = 1, if no digit is dialed, the channel waits the
+; following timeout (in milliseconds) before searching the default
+; extension 's'
+dialing_timeout_1st_digit = 5000
+; If monitor_dialing = 1, if a digit is dialed and it's not the value of
+; the search_extension_trigger parameter, the channel waits the following
+; timeout (in milliseconds) before searching if all the digits dialed form a
+; valid extension. If no extension is found, the channel waits for another digit.
+dialing_timeout = 3000
 ; This sets the Caller Id string and number for calls originating on
 ; this line.
 caller_id = "line1" <00-00-00-01>

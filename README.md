@@ -15,7 +15,9 @@ The main difference with 'alsa.conf' is the presence of parameters :
 - 'event_input_device' to specify a device which generate input events. The device should be those created by cm109 kernel driver to handle the phone keypad.
 - 'event_output_device' to specify a device to which you can write input events to make it ring. The device should be those created by cm109 kernel driver, but if for example the buzzer of the Skype phone sounds low, it can be the device of the PC speaker.
 
-The final result is in sub-directory 'chan_alsa_input'. It has been tested against Asterisk 11.
+The final result is in sub-directory 'chan_alsa_input'. It has been tested against Asterisk 11 and 13.
+Compilation is done by using command make with target for_ast_1.8, for_ast_11 or for_ast_13 to compile the channel driver for Asterisk 1.8, Asterisk 11 or Asterisk 13.
+The resulting shared library 'chan_alsa_input.so' is put in sub directory bin.
 
 Note that the channel driver can be used without the USB Skype Phone.
 The parameters 'snd_capture_device' and 'snd_playback_device' could be the name of any ALSA sound card.

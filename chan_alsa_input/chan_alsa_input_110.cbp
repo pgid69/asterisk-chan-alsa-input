@@ -20,6 +20,7 @@
 			<Add option="-Wextra" />
 			<Add option="-Wall" />
 			<Add option="-fPIC -pthread" />
+			<Add option="-DAST_VERSION=110" />
 		</Compiler>
 		<Linker>
 			<Add option="-pthread" />
