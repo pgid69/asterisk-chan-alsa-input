@@ -1708,7 +1708,10 @@ static void alsa_input_set_new_state(alsa_input_pvt_t *pvt,
    alsa_input_assert((NULL == pvt->owner) || (pvt->owner_lock_count > 0));
 
    if (new_state != pvt->ast_channel.state) {
-      if (AI_ST_OFF_TALKING == new_state) {
+      if (((AI_ST_OFF_TALKING == new_state)
+           || (AI_ST_OFF_WAITING_ANSWER == new_state))
+          && (AI_ST_OFF_TALKING != pvt->ast_channel.state)
+          && (AI_ST_OFF_WAITING_ANSWER != pvt->ast_channel.state)) {
          /*
           Start capture if not muted, playback will be started the
           next call of alsa_input_chan_write() */
@@ -1719,7 +1722,10 @@ static void alsa_input_set_new_state(alsa_input_pvt_t *pvt,
       else if (AI_ST_ON_RINGING == new_state) {
          alsa_input_turn_buzzer_on(pvt);
       }
-      if (AI_ST_OFF_TALKING == pvt->ast_channel.state) {
+      if (((AI_ST_OFF_TALKING == pvt->ast_channel.state)
+           || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state))
+          && (AI_ST_OFF_TALKING != new_state)
+          && (AI_ST_OFF_WAITING_ANSWER != new_state)) {
          /* Stop capture and playback */
          pvt->ast_channel.snd_capture_muted = true;
          alsa_input_stop_card(pvt->ast_channel.snd_capture);
@@ -2134,7 +2140,8 @@ static void alsa_input_set_line_tone(alsa_input_pvt_t *pvt,
    pvt->ast_channel.tone_duration_in_bytes = tone_duration * DEFAULT_SAMPLES_PER_MS * SAMPLE_SIZE;
    pvt->ast_channel.tone_bytes_generated = 0;
    if (AI_TONE_NONE == tone) {
-      if (AI_ST_OFF_TALKING != pvt->ast_channel.state) {
+      if ((AI_ST_OFF_TALKING != pvt->ast_channel.state)
+          && (AI_ST_OFF_WAITING_ANSWER != pvt->ast_channel.state)) {
          alsa_input_stop_card(pvt->ast_channel.snd_playback);
          alsa_input_reset_buf_bytes_not_written(pvt);
       }
@@ -2580,7 +2587,8 @@ static void alsa_input_handle_mute_change(alsa_input_pvt_t *pvt,
       && ((NULL == pvt->owner) || (pvt->owner_lock_count > 0))
       && (NULL != monitor_prms) && (monitor_prms->channel_is_locked));
 
-   if (AI_ST_OFF_TALKING == pvt->ast_channel.state) {
+   if ((AI_ST_OFF_TALKING == pvt->ast_channel.state)
+       || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state)) {
       /* Toggle mute */
       if (pvt->ast_channel.snd_capture_muted) {
          alsa_input_pr_debug("Line %lu is unmuted\n",
@@ -2694,7 +2702,8 @@ static void alsa_input_try_to_send_dtmf(alsa_input_pvt_t *pvt,
    alsa_input_assert((pvt->channel->monitor.lock_count > 0)
       && (NULL != pvt->owner) && (pvt->owner_lock_count > 0)
       && (NULL != monitor_prms) && (monitor_prms->channel_is_locked)
-      && (AI_ST_OFF_TALKING == pvt->ast_channel.state));
+      && ((AI_ST_OFF_TALKING == pvt->ast_channel.state)
+          || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state)));
 
    if (NONE != pvt->ast_channel.dtmf_sent) {
       struct timeval now = ast_tvnow();
@@ -2776,7 +2785,8 @@ static void alsa_input_handle_digit(alsa_input_pvt_t *pvt,
       && ((NULL == pvt->owner) || (pvt->owner_lock_count > 0))
       && (NULL != monitor_prms) && (monitor_prms->channel_is_locked));
 
-   if (AI_ST_OFF_TALKING == pvt->ast_channel.state) {
+   if ((AI_ST_OFF_TALKING == pvt->ast_channel.state)
+       || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state)) {
       alsa_input_assert(NULL != pvt->owner);
       if (pvt->ast_channel.digits_len < ARRAY_LEN(pvt->ast_channel.digits)) {
          pvt->ast_channel.digits[pvt->ast_channel.digits_len] = digit;
@@ -2847,11 +2857,11 @@ static void alsa_input_monitor_pvt(alsa_input_pvt_t *pvt,
       && ((NULL == pvt->owner) || (pvt->owner_lock_count > 0))
       && (NULL != monitor_prms) && (monitor_prms->channel_is_locked));
 
-   if (AI_ST_OFF_TALKING == pvt->ast_channel.state) {
+   if ((AI_ST_OFF_TALKING == pvt->ast_channel.state)
+       || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state)) {
       alsa_input_assert(NULL != pvt->owner);
       alsa_input_try_to_send_dtmf(pvt, monitor_prms);
-      if ((monitor_prms->channel_is_locked)
-          && (AI_ST_OFF_TALKING == pvt->ast_channel.state)) {
+      if (monitor_prms->channel_is_locked) {
          /* We read as much data as possible coming from the driver
           and queue ast_frame */
          alsa_input_read_data(pvt, true, true);
@@ -2965,7 +2975,8 @@ static void *alsa_input_do_monitor(void *data)
             fd_input = pvt->monitor.fd_input;
             /* Wait for data on sound input device only in conversation mode and if not muted */
             if (!pvt->monitor.last_known_snd_capture_muted) {
-               alsa_input_assert(AI_ST_OFF_TALKING == pvt->monitor.last_known_state);
+               alsa_input_assert((AI_ST_OFF_TALKING == pvt->monitor.last_known_state)
+                  || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state));
                fd_icard = pvt->monitor.fd_snd_capture;
             }
             else {
@@ -3085,7 +3096,7 @@ static void *alsa_input_do_monitor(void *data)
             }
             /*
              Sound input device can return POLLERR after call of snd_pcm_drop()
-             (when leaving state AI_ST_OFF_TALKING, or muting capture)
+             (when leaving state AI_ST_OFF_TALKING or AI_ST_OFF_WAITING_ANSWER, or muting capture)
              so handle (POLLERR | POLLHUP | POLLNVAL) only if condition
              to poll sound input device is still valid
             */
@@ -3680,7 +3691,8 @@ static struct ast_frame *alsa_input_chan_read(struct ast_channel *ast)
             break;
          }
 
-         alsa_input_assert(AI_ST_OFF_TALKING == pvt->ast_channel.state);
+         alsa_input_assert((AI_ST_OFF_TALKING == pvt->ast_channel.state)
+            || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state));
 
          if (alsa_input_read_data(pvt, false, false)) {
             ret = &(pvt->ast_channel.frame);
