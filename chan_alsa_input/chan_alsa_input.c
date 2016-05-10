@@ -2331,7 +2331,6 @@ static void alsa_input_new(alsa_input_pvt_t *pvt,
       if (AST_STATE_DOWN != ast_state) {
          alsa_input_assert(AI_ST_OFF_WAITING_ANSWER == state);
          /* We signals the user that there's a problem */
-         alsa_input_set_line_tone(pvt, AI_TONE_INVALID, 0);
          alsa_input_set_new_state(pvt, AI_ST_OFF_NO_SERVICE, AI_EV_INTERNAL_ERROR);
       }
       else {
@@ -2673,7 +2672,6 @@ static void alsa_input_search_extension(alsa_input_pvt_t *pvt,
             alsa_input_pr_debug("Extension '%s' can't match anything in '%s'\n",
                pvt->ast_channel.digits, pvt->line_cfg->context);
             /* We signals the user that there's a problem */
-            alsa_input_set_line_tone(pvt, AI_TONE_INVALID, 0);
             alsa_input_set_new_state(pvt, AI_ST_OFF_NO_SERVICE, AI_EV_NO_EXT_CAN_BE_FOUND);
          }
          else if (pvt->ast_channel.digits_len >= (ARRAY_LEN(pvt->ast_channel.digits) - 1)) {
@@ -2684,7 +2682,6 @@ static void alsa_input_search_extension(alsa_input_pvt_t *pvt,
             alsa_input_pr_debug("Extension '%s' can't match anything in '%s' and reaches maximum length\n",
                pvt->ast_channel.digits, pvt->line_cfg->context);
             /* We signals the user that there's a problem */
-            alsa_input_set_line_tone(pvt, AI_TONE_INVALID, 0);
             alsa_input_set_new_state(pvt, AI_ST_OFF_NO_SERVICE, AI_EV_NO_EXT_CAN_BE_FOUND);
          }
       }
@@ -2976,7 +2973,7 @@ static void *alsa_input_do_monitor(void *data)
             /* Wait for data on sound input device only in conversation mode and if not muted */
             if (!pvt->monitor.last_known_snd_capture_muted) {
                alsa_input_assert((AI_ST_OFF_TALKING == pvt->monitor.last_known_state)
-                  || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state));
+                  || (AI_ST_OFF_WAITING_ANSWER == pvt->monitor.last_known_state));
                fd_icard = pvt->monitor.fd_snd_capture;
             }
             else {
@@ -3149,7 +3146,7 @@ static void *alsa_input_do_monitor(void *data)
                continue;
             }
             if (AI_STATUS_OFF_HOOK != pvt->ast_channel.status) {
-               /* When on_hook no other key than KEY_ENTER can trigger an action */
+               /* When on hook no other key than KEY_ENTER can trigger an action */
                alsa_input_pr_debug("Line %lu : event ignored because phone is on hook\n",
                      (unsigned long)(pvt->index_line + 1));
                continue;
@@ -3409,13 +3406,13 @@ static int alsa_input_chan_answer(struct ast_channel *ast)
       alsa_input_assert(pvt->owner_lock_count > 0);
 #endif /* DEBUG */
       /* If phone not off hook, answer() is not allowed */
-      if (AI_STATUS_OFF_HOOK != pvt->ast_channel.status) {
-         ast_log(AST_LOG_WARNING, "Channel '%s' can't answer now, because not off hook\n", alsa_input_ast_channel_name(ast));
+      if ((AI_ST_OFF_TALKING != pvt->ast_channel.state)
+          && (AI_ST_OFF_NO_SERVICE != pvt->ast_channel.state)) {
+         ast_log(AST_LOG_WARNING, "Channel '%s' can't answer now, because not off hook or not in the correct state\n", alsa_input_ast_channel_name(ast));
       }
       else {
          /* We accept that answer() can be called if AI_ST_OFF_TALKING == pvt->ast_channel.state */
-         if (AI_ST_OFF_TALKING != pvt->ast_channel.state) {
-            alsa_input_assert(AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state);
+         if (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state) {
             ret = alsa_input_setup(pvt, alsa_input_ast_channel_rawreadformat(pvt->owner), AST_STATE_UP, AI_EV_AST_ANSWER);
             if (!ret) {
                alsa_input_ast_channel_rings_set(pvt->owner, 0);
@@ -3502,13 +3499,12 @@ static int alsa_input_chan_digit_end(struct ast_channel *ast, char digit, unsign
       pvt->owner_lock_count += 1;
       alsa_input_assert(pvt->owner_lock_count > 0);
 #endif /* DEBUG */
-      if (AI_STATUS_OFF_HOOK != pvt->ast_channel.status) {
-         ast_log(AST_LOG_WARNING, "Can't send a DTMF while not off_hook\n");
+      if ((AI_ST_OFF_TALKING != pvt->ast_channel.state)
+          && (AI_ST_OFF_WAITING_ANSWER != pvt->ast_channel.state)) {
+         ast_log(AST_LOG_WARNING, "Can't send a DTMF while not off hook or not in the correct state\n");
          ret = -1;
       }
       else {
-         alsa_input_assert((AI_ST_OFF_TALKING == pvt->ast_channel.state)
-            || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state));
          switch (digit) {
             case '0': {
                tone = AI_TONE_DTMF_0;
@@ -3614,12 +3610,11 @@ static int alsa_input_chan_indicate(struct ast_channel *ast, int condition, cons
       pvt->owner_lock_count += 1;
       alsa_input_assert(pvt->owner_lock_count > 0);
 #endif /* DEBUG */
-      if (AI_STATUS_OFF_HOOK != pvt->ast_channel.status) {
-         ast_log(AST_LOG_WARNING, "Can't indicate a condition while not off_hook\n");
+      if ((AI_ST_OFF_TALKING != pvt->ast_channel.state)
+          && (AI_ST_OFF_WAITING_ANSWER != pvt->ast_channel.state)) {
+         ast_log(AST_LOG_WARNING, "Can't indicate a condition while not off hook or not in the correct state\n");
       }
       else {
-         alsa_input_assert((AI_ST_OFF_TALKING == pvt->ast_channel.state)
-            || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state));
          switch (condition) {
             case AST_CONTROL_BUSY:
             case AST_CONTROL_CONGESTION:
@@ -3684,15 +3679,12 @@ static struct ast_frame *alsa_input_chan_read(struct ast_channel *ast)
       alsa_input_assert(pvt->owner_lock_count > 0);
 #endif /* DEBUG */
       do { /* Empty loop */
-         if ((AI_STATUS_OFF_HOOK != pvt->ast_channel.status)
-             || (AST_STATE_UP != alsa_input_ast_channel_state(pvt->owner))) {
-            /* Don't try to send audio on-hook */
-            ast_log(AST_LOG_WARNING, "Trying to receive audio while not off hook\n");
+         if ((AI_ST_OFF_TALKING != pvt->ast_channel.state)
+             && (AI_ST_OFF_WAITING_ANSWER != pvt->ast_channel.state)) {
+            /* Don't try to receive audio on-hook */
+            ast_log(AST_LOG_WARNING, "Trying to receive audio while not off hook or not in the correct state\n");
             break;
          }
-
-         alsa_input_assert((AI_ST_OFF_TALKING == pvt->ast_channel.state)
-            || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state));
 
          if (alsa_input_read_data(pvt, false, false)) {
             ret = &(pvt->ast_channel.frame);
@@ -3751,16 +3743,12 @@ static int alsa_input_chan_write(struct ast_channel *ast, struct ast_frame *fram
             break;
          }
 
-         if ((AI_STATUS_OFF_HOOK != pvt->ast_channel.status)
-             || (AI_ST_OFF_DIALING == pvt->ast_channel.state)
-             /* || (AST_STATE_UP != alsa_input_ast_channel_state(pvt->owner)) */) {
-            /* Don't try to send audio on-hook */
-            ast_log(AST_LOG_WARNING, "Trying to send audio while not off hook or not in correct state\n");
+         if ((AI_ST_OFF_TALKING != pvt->ast_channel.state)
+             && (AI_ST_OFF_WAITING_ANSWER != pvt->ast_channel.state)) {
+            /* Don't try to receive audio on-hook */
+            ast_log(AST_LOG_WARNING, "Trying to receive audio while not off hook or not in the correct state\n");
             break;
          }
-
-         alsa_input_assert((AI_ST_OFF_TALKING == pvt->ast_channel.state)
-            || (AI_ST_OFF_WAITING_ANSWER == pvt->ast_channel.state));
 
          if (AI_TONE_NONE != pvt->ast_channel.tone) {
             /* Don't try to send audio when emitting a tone */

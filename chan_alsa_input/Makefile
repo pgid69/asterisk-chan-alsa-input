@@ -43,6 +43,6 @@ $(OutDir)/chan_alsa_input.o: $(OutDir) chan_alsa_input.c
 ## Clean
 ##
 clean:
-	$(RM) -r $(IntermediateDirectory)
+	rm -r $(OutDir)
 
 
