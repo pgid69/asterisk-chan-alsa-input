@@ -1388,7 +1388,7 @@ static int alsa_input_card_init(const char *dev,
       }
       alsa_input_pr_debug("Opening device '%s' in %s mode\n", dev, (stream == SND_PCM_STREAM_CAPTURE) ? "read" : "write");
 
-      hw_params = ast_alloca(snd_pcm_hw_params_sizeof());
+      hw_params = ast_malloc(snd_pcm_hw_params_sizeof());
       if (NULL == hw_params) {
          ast_log(AST_LOG_ERROR, "Failed to allocate hw_params structure for device '%s'\n", dev);
          break;
@@ -1464,7 +1464,7 @@ static int alsa_input_card_init(const char *dev,
       /* Do not free hw_params on exit */
       hw_params = NULL;
 
-      sw_params = ast_alloca(snd_pcm_sw_params_sizeof());
+      sw_params = ast_malloc(snd_pcm_sw_params_sizeof());
       if (NULL == sw_params) {
          ast_log(AST_LOG_ERROR, "Failed to allocate sw_params structure for device '%s'\n", dev);
          break;
