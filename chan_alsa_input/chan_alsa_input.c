@@ -740,8 +740,13 @@ typedef struct {
 /* Buffer size must contain at least PERIOD_SIZE_IN_FRAMES * 2 bytes */
 #define BUFFER_SIZE (PERIOD_SIZE_IN_FRAMES * SAMPLE_SIZE)
 
-typedef struct alsa_input_pvt
-{
+typedef struct {
+   snd_pcm_t *card;
+   snd_pcm_hw_params_t *hw_params;
+   snd_pcm_sw_params_t *sw_params;
+} alsa_input_snd_card_t;
+
+typedef struct alsa_input_pvt {
    AST_LIST_ENTRY(alsa_input_pvt) list;
    struct alsa_input_chan *channel;
    /* Index of the line in array channel->config.line_cfgs */
@@ -797,9 +802,9 @@ typedef struct alsa_input_pvt
       /* Logical state */
       alsa_input_state_t state;
       /* Handle of sound capture device */
-      snd_pcm_t *snd_capture;
+      alsa_input_snd_card_t snd_capture;
       /* Handle of sound playback device */
-      snd_pcm_t *snd_playback;
+      alsa_input_snd_card_t snd_playback;
 
       /*
        Used to accumulate digits dialed
@@ -1365,13 +1370,15 @@ static void alsa_input_init_tones(void)
    alsa_input_tone_def_init(&(alsa_input_tone_dtmf_D), vol, alsa_input_tone_dtmf_D_parts, ARRAY_LEN(alsa_input_tone_dtmf_D_parts));
 }
 
-static int alsa_input_card_init(const char *dev,
-   snd_pcm_stream_t stream, snd_pcm_t **card, int *fd)
+static int alsa_input_snd_card_init(alsa_input_snd_card_t *t, const char *dev,
+   snd_pcm_stream_t stream, int *fd)
 {
    int ret = -1;
    snd_pcm_t *handle = NULL;
    snd_pcm_hw_params_t *hw_params = NULL;
    snd_pcm_sw_params_t *sw_params = NULL;
+
+   memset(t, 0, sizeof(*t));
 
    do { /* Empty loop */
       int err;
@@ -1463,9 +1470,6 @@ static int alsa_input_card_init(const char *dev,
          break;
       }
 
-      /* Do not free hw_params on exit */
-      hw_params = NULL;
-
       sw_params = NULL;
       err = snd_pcm_sw_params_malloc(&(sw_params));
       if ((err < 0) || (NULL == sw_params)) {
@@ -1510,9 +1514,6 @@ static int alsa_input_card_init(const char *dev,
          break;
       }
 
-      /* Do not free sw_params on exit */
-      sw_params = NULL;
-
       if (NULL != fd) {
          struct pollfd pfd;
          err = snd_pcm_poll_descriptors_count(handle);
@@ -1528,12 +1529,22 @@ static int alsa_input_card_init(const char *dev,
          snd_pcm_poll_descriptors(handle, &(pfd), err);
          *fd = pfd.fd;
       }
-      *card = handle;
+
+      t->card = handle;
       handle = NULL;
+      t->hw_params = hw_params;
+      hw_params = NULL;
+      t->sw_params = sw_params;
+      sw_params = NULL;
 
       ret = 0;
    }
    while (false);
+
+   if (NULL != handle) {
+      snd_pcm_close(handle);
+      handle = NULL;
+   }
 
    if (NULL != sw_params) {
       snd_pcm_sw_params_free(sw_params);
@@ -1545,15 +1556,24 @@ static int alsa_input_card_init(const char *dev,
       hw_params = NULL;
    }
 
-   if (NULL != handle) {
-      snd_pcm_close(handle);
-      handle = NULL;
-   }
-
    return (ret);
 }
 
-static bool alsa_input_handle_card_error(snd_pcm_t *card, snd_pcm_sframes_t error, const char *function)
+static void alsa_input_snd_card_deinit(alsa_input_snd_card_t *t)
+{
+   if (NULL != t->card) {
+      snd_pcm_close(t->card);
+      t->card = NULL;
+      alsa_input_assert(NULL != t->hw_params);
+      snd_pcm_hw_params_free(t->hw_params);
+      t->hw_params = NULL;
+      alsa_input_assert(NULL != t->sw_params);
+      snd_pcm_sw_params_free(t->sw_params);
+      t->sw_params = NULL;
+   }
+}
+
+static bool alsa_input_snd_card_handle_error(alsa_input_snd_card_t *t, snd_pcm_sframes_t error, const char *function)
 {
    bool ret = false;
 
@@ -1566,7 +1586,7 @@ static bool alsa_input_handle_card_error(snd_pcm_t *card, snd_pcm_sframes_t erro
       }
       alsa_input_pr_debug("%s() failed with error %ld : '%s'\n",
          function, (long)(error), snd_strerror(error));
-      error = snd_pcm_recover(card, error, 0);
+      error = snd_pcm_recover(t->card, error, 0);
       if (error >= 0) {
          break;
       }
@@ -1581,13 +1601,13 @@ static bool alsa_input_handle_card_error(snd_pcm_t *card, snd_pcm_sframes_t erro
          /* Device is in suspend state */
          int err = 0;
          for (;;) {
-            int err = snd_pcm_resume(card);
+            int err = snd_pcm_resume(t->card);
             if (-EAGAIN != err) {
                break;
             }
          }
          if (err) {
-            err = snd_pcm_prepare(card);
+            err = snd_pcm_prepare(t->card);
             if (err) {
                ast_log(AST_LOG_ERROR, "snd_pcm_prepare() failed: '%s'\n", snd_strerror(error));
             }
@@ -1604,21 +1624,21 @@ static bool alsa_input_handle_card_error(snd_pcm_t *card, snd_pcm_sframes_t erro
    return (ret);
 }
 
-static void alsa_input_start_card(snd_pcm_t *card)
+static void alsa_input_snd_card_start(alsa_input_snd_card_t *t)
 {
-   int err = snd_pcm_prepare(card);
+   int err = snd_pcm_prepare(t->card);
    if (err) {
       alsa_input_pr_debug("snd_pcm_prepare() failed: '%s'\n", snd_strerror(err));
    }
-   err = snd_pcm_start(card);
+   err = snd_pcm_start(t->card);
    if (err) {
       alsa_input_pr_debug("snd_pcm_start() failed: '%s'\n", snd_strerror(err));
    }
 }
 
-static void alsa_input_stop_card(snd_pcm_t *card)
+static void alsa_input_snd_card_stop(alsa_input_snd_card_t *t)
 {
-   int err = snd_pcm_drop(card);
+   int err = snd_pcm_drop(t->card);
    if (err) {
       alsa_input_pr_debug("snd_pcm_drop() failed: '%s'\n", snd_strerror(err));
    }
@@ -1719,7 +1739,7 @@ static void alsa_input_set_new_state(alsa_input_pvt_t *pvt,
           Start capture if not muted, playback will be started the
           next call of alsa_input_chan_write() */
          pvt->ast_channel.snd_capture_muted = false;
-         alsa_input_start_card(pvt->ast_channel.snd_capture);
+         alsa_input_snd_card_start(&(pvt->ast_channel.snd_capture));
          alsa_input_reset_buf_fr_to_queue(pvt);
       }
       else if (AI_ST_ON_RINGING == new_state) {
@@ -1731,9 +1751,9 @@ static void alsa_input_set_new_state(alsa_input_pvt_t *pvt,
           && (AI_ST_OFF_WAITING_ANSWER != new_state)) {
          /* Stop capture and playback */
          pvt->ast_channel.snd_capture_muted = true;
-         alsa_input_stop_card(pvt->ast_channel.snd_capture);
+         alsa_input_snd_card_stop(&(pvt->ast_channel.snd_capture));
          if (AI_TONE_NONE == pvt->ast_channel.tone) {
-            alsa_input_stop_card(pvt->ast_channel.snd_playback);
+            alsa_input_snd_card_stop(&(pvt->ast_channel.snd_playback));
             alsa_input_reset_buf_bytes_not_written(pvt);
          }
       }
@@ -1924,14 +1944,12 @@ static void alsa_input_disconnect_line(alsa_input_pvt_t *pvt)
    }
    pvt->monitor.last_known_state = pvt->ast_channel.state;
    /* Closes sound devices */
-   if (NULL != pvt->ast_channel.snd_capture) {
-      snd_pcm_close(pvt->ast_channel.snd_capture);
-      pvt->ast_channel.snd_capture = NULL;
+   if (NULL != pvt->ast_channel.snd_capture.card) {
+      alsa_input_snd_card_deinit(&(pvt->ast_channel.snd_capture));
       pvt->monitor.fd_snd_capture = -1;
    }
-   if (NULL != pvt->ast_channel.snd_playback) {
-      snd_pcm_close(pvt->ast_channel.snd_playback);
-      pvt->ast_channel.snd_playback = NULL;
+   if (NULL != pvt->ast_channel.snd_playback.card) {
+      alsa_input_snd_card_deinit(&(pvt->ast_channel.snd_playback));
    }
    if (pvt->monitor.fd_pipe >= 0) {
       close(pvt->monitor.fd_pipe);
@@ -2012,18 +2030,18 @@ static void alsa_input_write_tone_data(alsa_input_pvt_t *pvt)
          size_t tmp;
 
          /* We test if playback card is started */
-         state = snd_pcm_state(pvt->ast_channel.snd_playback);
+         state = snd_pcm_state(pvt->ast_channel.snd_playback.card);
          if ((state != SND_PCM_STATE_PREPARED) && (state != SND_PCM_STATE_RUNNING)) {
-            int err = snd_pcm_prepare(pvt->ast_channel.snd_playback);
+            int err = snd_pcm_prepare(pvt->ast_channel.snd_playback.card);
             if (err) {
                ast_log(AST_LOG_ERROR, "snd_pcm_prepare() failed: '%s'\n", snd_strerror(err));
             }
          }
-         written = snd_pcm_writei(pvt->ast_channel.snd_playback,
+         written = snd_pcm_writei(pvt->ast_channel.snd_playback.card,
             &(pvt->ast_channel.bytes_not_written[pvt->ast_channel.offset_bytes_not_written]),
             pvt->ast_channel.bytes_not_written_len / SAMPLE_SIZE);
          if (written < 0) {
-            if (alsa_input_handle_card_error(pvt->ast_channel.snd_playback, written, "snd_pcm_writei")) {
+            if (alsa_input_snd_card_handle_error(&(pvt->ast_channel.snd_playback), written, "snd_pcm_writei")) {
                /* Critical error */
                alsa_input_critical_error(pvt, false);
             }
@@ -2145,7 +2163,7 @@ static void alsa_input_set_line_tone(alsa_input_pvt_t *pvt,
    if (AI_TONE_NONE == tone) {
       if ((AI_ST_OFF_TALKING != pvt->ast_channel.state)
           && (AI_ST_OFF_WAITING_ANSWER != pvt->ast_channel.state)) {
-         alsa_input_stop_card(pvt->ast_channel.snd_playback);
+         alsa_input_snd_card_stop(&(pvt->ast_channel.snd_playback));
          alsa_input_reset_buf_bytes_not_written(pvt);
       }
       else {
@@ -2403,18 +2421,18 @@ static bool alsa_input_read_data(alsa_input_pvt_t *pvt,
       to_read = (ARRAY_LEN(pvt->ast_channel.buf_fr_to_queue) - pvt->ast_channel.offset_buf_fr_to_queue);
       for (;;) {
          if (to_read >= SAMPLE_SIZE) {
-            state = snd_pcm_state(pvt->ast_channel.snd_capture);
+            state = snd_pcm_state(pvt->ast_channel.snd_capture.card);
             if ((state != SND_PCM_STATE_PREPARED) && (state != SND_PCM_STATE_RUNNING)) {
-               int err = snd_pcm_prepare(pvt->ast_channel.snd_capture);
+               int err = snd_pcm_prepare(pvt->ast_channel.snd_capture.card);
                if (err) {
                   ast_log(AST_LOG_ERROR, "snd_pcm_prepare() failed: '%s'\n", snd_strerror(err));
                }
             }
 
-            read = snd_pcm_readi(pvt->ast_channel.snd_capture, pvt->ast_channel.buf_fr_to_queue + pvt->ast_channel.offset_buf_fr_to_queue,
+            read = snd_pcm_readi(pvt->ast_channel.snd_capture.card, pvt->ast_channel.buf_fr_to_queue + pvt->ast_channel.offset_buf_fr_to_queue,
                to_read / SAMPLE_SIZE);
             if (read < 0) {
-               if (alsa_input_handle_card_error(pvt->ast_channel.snd_capture, read, "snd_pcm_readi")) {
+               if (alsa_input_snd_card_handle_error(&(pvt->ast_channel.snd_capture), read, "snd_pcm_readi")) {
                   /* Critical error */
                   alsa_input_critical_error(pvt, monitor_is_locked);
                }
@@ -2607,13 +2625,13 @@ static void alsa_input_handle_mute_change(alsa_input_pvt_t *pvt,
          alsa_input_pr_debug("Line %lu is unmuted\n",
             (unsigned long)(pvt->index_line + 1));
          pvt->ast_channel.snd_capture_muted = false;
-         alsa_input_start_card(pvt->ast_channel.snd_capture);
+         alsa_input_snd_card_start(&(pvt->ast_channel.snd_capture));
       }
       else {
          alsa_input_pr_debug("Line %lu is muted\n",
             (unsigned long)(pvt->index_line + 1));
          pvt->ast_channel.snd_capture_muted = true;
-         alsa_input_stop_card(pvt->ast_channel.snd_capture);
+         alsa_input_snd_card_stop(&(pvt->ast_channel.snd_capture));
       }
       pvt->monitor.last_known_snd_capture_muted = pvt->ast_channel.snd_capture_muted;
       alsa_input_reset_buf_fr_to_queue(pvt);
@@ -3111,7 +3129,7 @@ static void *alsa_input_do_monitor(void *data)
             */
             if (!pvt->monitor.last_known_snd_capture_muted) {
                unsigned short revents;
-               int err = snd_pcm_poll_descriptors_revents(pvt->ast_channel.snd_capture, &(pfds[1]), 1, &(revents));
+               int err = snd_pcm_poll_descriptors_revents(pvt->ast_channel.snd_capture.card, &(pfds[1]), 1, &(revents));
                if (err) {
                   ast_log(AST_LOG_ERROR, "snd_pcm_poll_descriptors_revents() failed: '%s'\n", snd_strerror(err));
                   revents = POLLERR;
@@ -3769,9 +3787,9 @@ static int alsa_input_chan_write(struct ast_channel *ast, struct ast_frame *fram
             break;
          }
 
-         state = snd_pcm_state(pvt->ast_channel.snd_playback);
+         state = snd_pcm_state(pvt->ast_channel.snd_playback.card);
          if ((state != SND_PCM_STATE_PREPARED) && (state != SND_PCM_STATE_RUNNING)) {
-            int err = snd_pcm_prepare(pvt->ast_channel.snd_playback);
+            int err = snd_pcm_prepare(pvt->ast_channel.snd_playback.card);
             if (err) {
                ast_log(AST_LOG_ERROR, "snd_pcm_prepare() failed: '%s'\n", snd_strerror(err));
             }
@@ -3804,9 +3822,9 @@ static int alsa_input_chan_write(struct ast_channel *ast, struct ast_frame *fram
                pos += tmp;
                to_write -= tmp;
             }
-            written = snd_pcm_writei(pvt->ast_channel.snd_playback, pvt->ast_channel.bytes_not_written, 1);
+            written = snd_pcm_writei(pvt->ast_channel.snd_playback.card, pvt->ast_channel.bytes_not_written, 1);
             if (written < 0) {
-               if (alsa_input_handle_card_error(pvt->ast_channel.snd_playback, written, "snd_pcm_writei")) {
+               if (alsa_input_snd_card_handle_error(&(pvt->ast_channel.snd_playback), written, "snd_pcm_writei")) {
                   /* Critical error */
                   alsa_input_critical_error(pvt, false);
                }
@@ -3823,9 +3841,9 @@ static int alsa_input_chan_write(struct ast_channel *ast, struct ast_frame *fram
             }
          }
          if (pvt->ast_channel.bytes_not_written_len <= 0) {
-            written = snd_pcm_writei(pvt->ast_channel.snd_playback, pos, to_write / SAMPLE_SIZE);
+            written = snd_pcm_writei(pvt->ast_channel.snd_playback.card, pos, to_write / SAMPLE_SIZE);
             if (written < 0) {
-               if (alsa_input_handle_card_error(pvt->ast_channel.snd_playback, written, "snd_pcm_writei")) {
+               if (alsa_input_snd_card_handle_error(&(pvt->ast_channel.snd_playback), written, "snd_pcm_writei")) {
                   /* Critical error */
                   alsa_input_critical_error(pvt, false);
                }
@@ -3924,14 +3942,12 @@ static void alsa_input_close_devices(alsa_input_chan_t *t)
    /* We hangup all lines if they have an owner */
    alsa_input_pr_debug("Freeing resources of the lines\n");
    AST_LIST_TRAVERSE(&(t->pvt_list), pvt, list) {
-      if (NULL != pvt->ast_channel.snd_capture) {
-         snd_pcm_close(pvt->ast_channel.snd_capture);
-         pvt->ast_channel.snd_capture = NULL;
+      if (NULL != pvt->ast_channel.snd_capture.card) {
+         alsa_input_snd_card_deinit(&(pvt->ast_channel.snd_capture));
          pvt->monitor.fd_snd_capture = -1;
       }
-      if (NULL != pvt->ast_channel.snd_playback) {
-         snd_pcm_close(pvt->ast_channel.snd_playback);
-         pvt->ast_channel.snd_playback = NULL;
+      if (NULL != pvt->ast_channel.snd_playback.card) {
+         alsa_input_snd_card_deinit(&(pvt->ast_channel.snd_playback));
       }
       if (pvt->monitor.fd_pipe >= 0) {
          close(pvt->monitor.fd_pipe);
@@ -3959,15 +3975,17 @@ static int alsa_input_open_devices(alsa_input_chan_t *t)
 
       /* Finally init the state of the lines */
       AST_LIST_TRAVERSE(&(t->pvt_list), pvt, list) {
-         if (alsa_input_card_init(pvt->line_cfg->snd_capture_dev_name,
-            SND_PCM_STREAM_CAPTURE, &(pvt->ast_channel.snd_capture), &(pvt->monitor.fd_snd_capture))) {
+         if (alsa_input_snd_card_init(&(pvt->ast_channel.snd_capture),
+            pvt->line_cfg->snd_capture_dev_name, SND_PCM_STREAM_CAPTURE,
+            &(pvt->monitor.fd_snd_capture))) {
             ast_log(AST_LOG_ERROR, "Problem opening ALSA capture device '%s'\n", pvt->line_cfg->snd_capture_dev_name);
             ret = AST_MODULE_LOAD_FAILURE;
             break;
          }
 
-         if (alsa_input_card_init(pvt->line_cfg->snd_playback_dev_name,
-            SND_PCM_STREAM_PLAYBACK, &(pvt->ast_channel.snd_playback), NULL)) {
+         if (alsa_input_snd_card_init(&(pvt->ast_channel.snd_playback),
+            pvt->line_cfg->snd_playback_dev_name, SND_PCM_STREAM_PLAYBACK,
+            NULL)) {
             ast_log(AST_LOG_ERROR, "Problem opening ALSA playback device '%s'\n", pvt->line_cfg->snd_playback_dev_name);
             ret = AST_MODULE_LOAD_FAILURE;
             break;
@@ -4075,8 +4093,8 @@ static alsa_input_pvt_t *alsa_input_add_pvt(alsa_input_chan_t *t, size_t index_l
       tmp->monitor.fd_pipe = -1;
       tmp->monitor.events_len_in_bytes = 0;
       alsa_input_reset_pvt_monitor_state(tmp);
-      tmp->ast_channel.snd_capture = NULL;
-      tmp->ast_channel.snd_playback = NULL;
+      tmp->ast_channel.snd_capture.card = NULL;
+      tmp->ast_channel.snd_playback.card = NULL;
       tmp->ast_channel.status = AI_STATUS_ON_HOOK;
       tmp->ast_channel.snd_capture_muted = true;
       tmp->ast_channel.tone = AI_TONE_NONE;
