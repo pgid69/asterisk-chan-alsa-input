@@ -344,13 +344,15 @@ static inline void alsa_input_ast_channel_nativeformats_set(
 #endif /* (AST_VERSION < 110) */
 #if (110 == AST_VERSION)
    struct ast_format_cap *tmpcap = ast_channel_nativeformats(chan);
+   if (NULL == tmpcap) {
+      tmpcap = ast_format_cap_alloc();
+   }
    if (NULL != tmpcap) {
       ast_format_cap_remove_all(tmpcap);
       ast_format_cap_copy(tmpcap, value);
    }
    else {
-      ao2_ref(value, 1);
-      ast_channel_nativeformats_set(chan, value);
+      alsa_input_assert(false);
    }
 #endif /* (110 == AST_VERSION) */
 #if (AST_VERSION > 110)
@@ -1388,12 +1390,12 @@ static int alsa_input_card_init(const char *dev,
       }
       alsa_input_pr_debug("Opening device '%s' in %s mode\n", dev, (stream == SND_PCM_STREAM_CAPTURE) ? "read" : "write");
 
-      hw_params = ast_malloc(snd_pcm_hw_params_sizeof());
-      if (NULL == hw_params) {
+      hw_params = NULL;
+      err = snd_pcm_hw_params_malloc(&(hw_params));
+      if ((err < 0) || (NULL == hw_params)) {
          ast_log(AST_LOG_ERROR, "Failed to allocate hw_params structure for device '%s'\n", dev);
          break;
       }
-      memset(hw_params, 0, snd_pcm_hw_params_sizeof());
 
       err = snd_pcm_hw_params_any(handle, hw_params);
       if (err < 0) {
@@ -1464,12 +1466,13 @@ static int alsa_input_card_init(const char *dev,
       /* Do not free hw_params on exit */
       hw_params = NULL;
 
-      sw_params = ast_malloc(snd_pcm_sw_params_sizeof());
-      if (NULL == sw_params) {
+      sw_params = NULL;
+      err = snd_pcm_sw_params_malloc(&(sw_params));
+      if ((err < 0) || (NULL == sw_params)) {
          ast_log(AST_LOG_ERROR, "Failed to allocate sw_params structure for device '%s'\n", dev);
          break;
       }
-      memset(sw_params, 0, snd_pcm_sw_params_sizeof());
+
       err = snd_pcm_sw_params_current(handle, sw_params);
       if (err < 0) {
          ret = err;
@@ -1533,12 +1536,12 @@ static int alsa_input_card_init(const char *dev,
    while (false);
 
    if (NULL != sw_params) {
-      ast_free(sw_params);
+      snd_pcm_sw_params_free(sw_params);
       sw_params = NULL;
    }
 
    if (NULL != hw_params) {
-      ast_free(hw_params);
+      snd_pcm_hw_params_free(hw_params);
       hw_params = NULL;
    }
 
@@ -2215,6 +2218,19 @@ static void alsa_input_new(alsa_input_pvt_t *pvt,
    else {
       pvt->ast_channel.digits[pvt->ast_channel.digits_len] = '\0';
    }
+   /*
+    Because we provide no file descriptor to poll (for ast_waitfor()), it's
+    important to set parameter needqueue to true.
+    That way if Asterisk can't create a timer (eg because there's no timing
+    interfaces) it will at least create an "alert" pipe whose read end is polled
+    in ast_waitfor() and whose write end is written each time we queue a frame
+    (in ast_queue_frame()). read end of the pipe is read in ast_read().
+    If Asterisk can create a timer and if its name is "timerfd", it will not
+    create the "alert" pipe.
+    Asterisk uses the timer by setting it in continuous mode in
+    ast_queue_frame() and unsetting from continuous mode in ast_read()
+    The file descriptor provided by the timer is used in ast_waitfor().
+   */
    tmp = ast_channel_alloc(1, ast_state,
       ('\0' != pvt->line_cfg->cid_num[0]) ? pvt->line_cfg->cid_num : NULL,
       ('\0' != pvt->line_cfg->cid_name[0]) ? pvt->line_cfg->cid_name : NULL,
@@ -2245,8 +2261,6 @@ static void alsa_input_new(alsa_input_pvt_t *pvt,
 
       alsa_input_ast_channel_tech_set(tmp, &(pvt->channel->chan_tech));
 
-      /* No file descriptor to poll (polling done in monitor thread) */
-      ast_channel_set_fd(tmp, 0, -1);
       alsa_input_ast_channel_nativeformats_set(tmp, alsa_input_get_chan_tech_cap(&(pvt->channel->chan_tech)));
       alsa_input_ast_channel_set_rawreadformat(tmp, ast_format_slin);
       alsa_input_ast_channel_set_rawwriteformat(tmp, ast_format_slin);
@@ -2274,7 +2288,7 @@ static void alsa_input_new(alsa_input_pvt_t *pvt,
       pvt->owner = tmp;
 
       /*
-       Set state before starting channel's thread
+       Set internal state before starting channel's thread
       */
       alsa_input_set_new_state(pvt, state, cause);
 
@@ -2734,10 +2748,8 @@ static void alsa_input_try_to_send_dtmf(alsa_input_pvt_t *pvt,
        and AST_FRAME_DTMF_END (it does it only when processing
        a frame)
       */
-      if (AST_STATE_UP == alsa_input_ast_channel_state(pvt->owner)) {
-         if (ast_queue_frame(pvt->owner, &(ast_null_frame))) {
-            ast_log(AST_LOG_WARNING, "Can't queue null frame for line %lu\n", (unsigned long)(pvt->index_line + 1));
-         }
+      if (ast_queue_frame(pvt->owner, &(ast_null_frame))) {
+         ast_log(AST_LOG_WARNING, "Can't queue null frame for line %lu\n", (unsigned long)(pvt->index_line + 1));
       }
    }
    if ((NONE == pvt->ast_channel.dtmf_sent) && (pvt->ast_channel.digits_len > 0)) {
